@@ -19,24 +19,22 @@
     host: "{{ item.host }}"
     port: "{{ item.port }}"
     timeout: 10
-  loop:
-    - { host: 127.0.0.1, port: "{{ haproxy_http_port }}" }
-    - { host: 127.0.0.1, port: "{{ haproxy_https_port }}" }
-    - { host: "{{ haproxy_ip }}", port: "{{ haproxy_stats_port }}" }
+  loop: >-
+    {{ [{'host': '127.0.0.1', 'port': haproxy_https_port}, {'host': haproxy_ip, 'port': haproxy_stats_port}]
+       + ([] if haproxy_behind_waf | bool else [{'host': '127.0.0.1', 'port': haproxy_http_port}]) }}
 
 - name: Check HTTP redirects to HTTPS
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ haproxy_http_port }}/"
     follow_redirects: none
     status_code: [301, 308]
-  when: haproxy_tls_mode == 'terminate'
+  when: not haproxy_behind_waf | bool
 
 - name: Check Keycloak admin is blocked from the Internet entry
   ansible.builtin.uri:
     url: "https://127.0.0.1:{{ haproxy_https_port }}/auth/admin/"
     validate_certs: false
     status_code: 404
-  when: haproxy_tls_mode == 'terminate'
 
 - name: Read backend health from Prometheus endpoint
   ansible.builtin.uri:
@@ -48,11 +46,13 @@
   register: haproxy_metrics
   no_log: true
 
-- name: Count Ingress servers that are UP
-  ansible.builtin.set_fact:
-    haproxy_up_servers: >-
-      {{ haproxy_metrics.content | regex_findall('haproxy_server_status\{proxy="be_ingress",server="[^"]+",state="UP"\} 1') | length }}
-
-- name: Report Ingress health
+- name: Report NodePort health per backend
   ansible.builtin.debug:
-    msg: "{{ inventory_hostname }}: {{ haproxy_up_servers }}/{{ haproxy_ingress_servers | length }} Ingress servers UP"
+    msg: >-
+      {{ inventory_hostname }} be_{{ item.name }}:
+      {{ haproxy_metrics.content
+         | regex_findall('haproxy_server_status\{proxy="be_' ~ item.name ~ '",server="[^"]+",state="UP"\} 1')
+         | length }}/{{ haproxy_k8s_nodes | length }} nút UP
+  loop: "{{ haproxy_backends }}"
+  loop_control:
+    label: "be_{{ item.name }}"

@@ -52,7 +52,6 @@
         dest: "{{ bundle_dir }}/files/site.pem"
         mode: "0600"
       no_log: true
-      when: haproxy_tls_mode == 'terminate'
 
     - name: Render install and verify scripts
       ansible.builtin.template:

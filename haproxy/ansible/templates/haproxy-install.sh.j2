@@ -44,13 +44,11 @@ put_file "${F}/override.conf" /etc/systemd/system/haproxy.service.d/override.con
 systemctl daemon-reload
 
 # --------------------------------------------------------------------------
-log "Cấu hình HAProxy ({{ haproxy_tls_mode }})"
+log "Cấu hình HAProxy ({{ 'sau WAF' if haproxy_behind_waf | bool else 'người dùng vào thẳng' }}, {{ haproxy_k8s_nodes | length }} nút Kubernetes)"
 # --------------------------------------------------------------------------
 cfg_changed=0
-{% if haproxy_tls_mode == 'terminate' %}
 install -d -m 0700 -o root -g root '{{ cert_dir }}'
 put_file "${F}/site.pem" '{{ cert_file }}' 0600 root:root && cfg_changed=1 || true
-{% endif %}
 haproxy -c -q -f "${F}/haproxy.cfg" || die "haproxy.cfg không hợp lệ (xem lỗi ở trên); cấu hình đang chạy giữ nguyên."
 put_file "${F}/haproxy.cfg" "${CFG}" 0640 root:haproxy && cfg_changed=1 || true
 systemctl enable haproxy >/dev/null

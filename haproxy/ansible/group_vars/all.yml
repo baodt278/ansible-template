@@ -1,8 +1,9 @@
 ---
 # =============================================================================
-# HAProxy — 2 máy vùng DMZ, chạy song song (DNS/tường lửa trỏ vào IP của cả hai), cổng vào duy nhất từ Internet (443, 80 → 443)
-# đẩy vào Ingress cụm VKE. Ingress định tuyến theo đường dẫn (/, /api, /oauth2, /login/oauth2,
-# /auth, /ban-cai, /otlp). Cài trực tuyến từ kho Ubuntu. Bí mật đọc từ .env.
+# HAProxy — 2 máy vùng DMZ chạy song song (WAF hoặc DNS trỏ vào cả hai).
+# Cụm Kubernetes KHÔNG có Ingress: HAProxy giữ TLS (*.dcs.vn) và chia theo đường dẫn tới NodePort
+# của từng dịch vụ trên các nút: /api /oauth2 /login/oauth2 → api; /auth → keycloak; /otlp → otel;
+# /ban-cai → nơi chứa bộ cài máy tính; còn lại → web. Cài trực tuyến từ kho Ubuntu. Bí mật đọc từ .env.
 # =============================================================================
 
 templates_dir: "{{ playbook_dir }}/../templates"
@@ -20,9 +21,7 @@ haproxy_install_packages: "{{ haproxy_packages }}"
 # -----------------------------------------------------------------------------
 # Đầu vào
 # -----------------------------------------------------------------------------
-# terminate | passthrough
-haproxy_tls_mode: "{{ lookup('ansible.builtin.env', 'HAPROXY_TLS_MODE') | default('terminate', true) }}"
-# Tệp PEM trên máy điều khiển (chứng chỉ + chuỗi trung gian + khóa riêng). Chỉ dùng khi terminate.
+# Tệp PEM trên máy chạy Ansible/install-here (chứng chỉ + chuỗi trung gian + khóa riêng).
 haproxy_tls_pem_src: "{{ lookup('ansible.builtin.env', 'HAPROXY_TLS_PEM_FILE') }}"
 haproxy_bind_address: "*"
 haproxy_http_port: 80
@@ -33,22 +32,43 @@ haproxy_maxconn: 20000
 haproxy_tune_bufsize: 81920
 haproxy_hsts_max_age: 31536000
 
+# WAF đứng trước (vd WAF Viettel AI): danh sách dải IP WAF dùng để gọi về máy gốc, cách nhau bởi dấu phẩy.
+# Có giá trị: chỉ các dải này được vào 443, IP người dùng lấy từ X-Forwarded-For do WAF gắn, không mở cổng 80.
+# Để trống: người dùng vào thẳng HAProxy (mở 80 → 443, IP người dùng = IP nguồn).
+haproxy_waf_ranges_raw: "{{ lookup('ansible.builtin.env', 'HAPROXY_WAF_RANGES') }}"
+haproxy_waf_ranges: "{{ haproxy_waf_ranges_raw | split(',') | map('trim') | select | list }}"
+haproxy_behind_waf: "{{ haproxy_waf_ranges | length > 0 }}"
+
 # Chặn từ Internet: trang quản trị Keycloak và realm master (quản trị đi qua Bastion/đường hầm).
 haproxy_blocked_path_prefixes:
   - /auth/admin
   - /auth/realms/master
 
-# Giới hạn số yêu cầu theo IP. Mặc định tắt: nhiều đơn vị đi Internet qua cùng một IP NAT.
+# Giới hạn số yêu cầu theo IP người dùng. Mặc định tắt: nhiều đơn vị đi Internet qua cùng một IP NAT.
 haproxy_rate_limit_enabled: false
 haproxy_rate_limit_per_10s: 500
 
 # -----------------------------------------------------------------------------
-# Ingress cụm VKE
+# Kubernetes: các nút và NodePort của từng dịch vụ (Service kiểu NodePort)
 # -----------------------------------------------------------------------------
-haproxy_ingress_servers_raw: "{{ lookup('ansible.builtin.env', 'HAPROXY_INGRESS_SERVERS') }}"
-haproxy_ingress_servers: "{{ haproxy_ingress_servers_raw | split(',') | map('trim') | select | list }}"
-# Ingress nghe HTTP (TLS kết thúc ở HAProxy). Ở passthrough, cổng phải là cổng HTTPS của Ingress.
-haproxy_ingress_check: "inter 3s fall 3 rise 2"
+haproxy_k8s_nodes_raw: "{{ lookup('ansible.builtin.env', 'HAPROXY_K8S_NODES') }}"
+haproxy_k8s_nodes: "{{ haproxy_k8s_nodes_raw | split(',') | map('trim') | select | list }}"
+haproxy_nodeport_web: "{{ lookup('ansible.builtin.env', 'HAPROXY_NODEPORT_WEB') }}"
+haproxy_nodeport_api: "{{ lookup('ansible.builtin.env', 'HAPROXY_NODEPORT_API') }}"
+haproxy_nodeport_keycloak: "{{ lookup('ansible.builtin.env', 'HAPROXY_NODEPORT_KEYCLOAK') }}"
+# Tùy chọn: để trống thì /otlp trả 503, /ban-cai trả 404.
+haproxy_nodeport_otlp: "{{ lookup('ansible.builtin.env', 'HAPROXY_NODEPORT_OTLP') }}"
+haproxy_nodeport_ban_cai: "{{ lookup('ansible.builtin.env', 'HAPROXY_NODEPORT_BAN_CAI') }}"
+
+# Kiểm tra sức khỏe: api qua /actuator/health (công khai, không cần đăng nhập), web qua /, còn lại mức TCP
+# (cổng sức khỏe 9000 của Keycloak không phơi ra NodePort).
+haproxy_backend_check: "inter 3s fall 3 rise 2"
+haproxy_backends: >-
+  {{ [{'name': 'web', 'port': haproxy_nodeport_web, 'check_path': '/'},
+      {'name': 'api', 'port': haproxy_nodeport_api, 'check_path': '/actuator/health'},
+      {'name': 'keycloak', 'port': haproxy_nodeport_keycloak, 'check_path': ''}]
+     + ([{'name': 'otlp', 'port': haproxy_nodeport_otlp, 'check_path': ''}] if haproxy_nodeport_otlp else [])
+     + ([{'name': 'ban_cai', 'port': haproxy_nodeport_ban_cai, 'check_path': ''}] if haproxy_nodeport_ban_cai else []) }}
 
 # -----------------------------------------------------------------------------
 # Thời gian chờ — xuất/nhập Excel lớn và tải tệp có thể lâu

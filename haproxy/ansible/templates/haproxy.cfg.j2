@@ -1,5 +1,6 @@
 # {{ ansible_managed }}
-# Cổng vào từ Internet → Ingress cụm VKE. Chế độ TLS: {{ haproxy_tls_mode }}.
+# {{ 'WAF (giữ TLS với người dùng) → ' if haproxy_behind_waf | bool else 'Internet → ' }}HAProxy (TLS *.dcs.vn) → NodePort các dịch vụ trên {{ haproxy_k8s_nodes | length }} nút Kubernetes.
+# Không có Ingress: HAProxy chia theo đường dẫn như Ingress (khớp site Caddy cnnv_routes trên máy thử 01-3).
 
 global
     log /dev/log local0
@@ -31,6 +32,7 @@ defaults
     timeout http-keep-alive {{ haproxy_timeout_http_keep_alive }}
     timeout queue {{ haproxy_timeout_queue }}
     timeout tunnel {{ haproxy_timeout_tunnel }}
+    default-server check {{ haproxy_backend_check }}
     errorfile 400 /etc/haproxy/errors/400.http
     errorfile 403 /etc/haproxy/errors/403.http
     errorfile 408 /etc/haproxy/errors/408.http
@@ -54,41 +56,52 @@ frontend stats
     http-request set-log-level silent
 
 userlist stats_users
-    # Mật khẩu băm SHA-512 crypt (tạo trên máy đích bằng openssl, muối cố định để chạy lại không đổi tệp)
+    # Mật khẩu băm SHA-512 crypt (openssl, muối cố định để chạy lại không đổi tệp)
     user {{ haproxy_stats_user }} password {{ haproxy_stats_password_hash }}
 
-{% if haproxy_tls_mode == 'terminate' %}
+{% if not haproxy_behind_waf | bool %}
 # ---------------------------------------------------------------------------
-# HTTP → HTTPS
+# HTTP → HTTPS (chỉ khi người dùng vào thẳng; sau WAF thì WAF tự chuyển)
 # ---------------------------------------------------------------------------
 frontend fe_http
     bind {{ haproxy_bind_address }}:{{ haproxy_http_port }}
     mode http
     http-request redirect scheme https code 301
 
+{% endif %}
 # ---------------------------------------------------------------------------
-# HTTPS (TLS kết thúc ở HAProxy)
+# HTTPS
 # ---------------------------------------------------------------------------
 frontend fe_https
     bind {{ haproxy_bind_address }}:{{ haproxy_https_port }} ssl crt {{ cert_file }} alpn h2,http/1.1
     mode http
-    option forwardfor
+
+{% if haproxy_behind_waf | bool %}
+    # Chỉ WAF (và chính máy này, cho bước kiểm tra) được vào: chặn đi vòng qua WAF.
+    acl from_waf src {{ haproxy_waf_ranges | join(' ') }} 127.0.0.0/8
+    tcp-request connection reject if !from_waf
+    # IP người dùng = địa chỉ WAF gắn vào CUỐI X-Forwarded-For (phần đầu do trình duyệt tự đặt được, không tin).
+    http-request set-var(txn.client_ip) req.hdr_ip(X-Forwarded-For,-1) if { req.hdr(X-Forwarded-For) -m found }
+    http-request set-var(txn.client_ip) src unless { var(txn.client_ip) -m found }
+{% else %}
+    # Người dùng vào thẳng: IP nguồn là IP người dùng; bỏ X-Forwarded-For trình duyệt tự gửi.
+    http-request set-var(txn.client_ip) src
+{% endif %}
 
 {% if haproxy_rate_limit_enabled %}
     stick-table type ip size 200k expire 30s store http_req_rate(10s)
-    http-request track-sc0 src
+    http-request track-sc0 var(txn.client_ip)
     http-request deny deny_status 429 if { sc_http_req_rate(0) gt {{ haproxy_rate_limit_per_10s }} }
 {% endif %}
 
-    # Không cho trình duyệt giả tiêu đề chuyển tiếp; Keycloak (sslRequired=external, KC_PROXY_HEADERS=xforwarded)
-    # và API (forward-headers-strategy: framework) dựa vào các tiêu đề này để dựng địa chỉ chuyển hướng.
-    # X-Forwarded-For: xóa giá trị client gửi, option forwardfor gắn lại IP thật (chống giả IP trong nhật ký/giới hạn).
+    # Tiêu đề chuyển tiếp: Keycloak (sslRequired=external, KC_PROXY_HEADERS=xforwarded) và API
+    # (forward-headers-strategy: framework) dựa vào đây để dựng địa chỉ chuyển hướng, ghi IP nhật ký.
     http-request del-header Forwarded
-    http-request del-header X-Forwarded-For
+    http-request set-header X-Forwarded-For %[var(txn.client_ip)]
+    http-request set-header X-Real-IP %[var(txn.client_ip)]
     http-request set-header X-Forwarded-Proto https
     http-request set-header X-Forwarded-Host %[req.hdr(host)]
     http-request set-header X-Forwarded-Port {{ haproxy_https_port }}
-    http-request set-header X-Real-IP %[src]
 
     # Trang quản trị Keycloak, realm master: không mở ra Internet (quản trị qua Bastion/đường hầm)
 {% for prefix in haproxy_blocked_path_prefixes %}
@@ -97,47 +110,55 @@ frontend fe_https
 {% endfor %}
     http-request deny deny_status 404 if blocked_path
 
-    # Tiêu đề bảo mật (ATTT): giữ giá trị riêng nếu API/Keycloak đã gửi
-    http-response del-header Server
-    http-response del-header X-Powered-By
-    http-response set-header Strict-Transport-Security "max-age={{ haproxy_hsts_max_age }}"
-    http-response set-header X-Content-Type-Options nosniff if !{ res.hdr(X-Content-Type-Options) -m found }
-    http-response set-header Referrer-Policy strict-origin-when-cross-origin if !{ res.hdr(Referrer-Policy) -m found }
-    http-response set-header X-Frame-Options SAMEORIGIN if !{ res.hdr(X-Frame-Options) -m found }
-
-    default_backend be_ingress
-
-backend be_ingress
-    mode http
-    balance roundrobin
-    option redispatch
-    retries 2
-{% for server in haproxy_ingress_servers %}
-    server ingress{{ loop.index }} {{ server }} check {{ haproxy_ingress_check }}
-{% endfor %}
-{% else %}
-# ---------------------------------------------------------------------------
-# TLS passthrough: Ingress giữ chứng chỉ; HAProxy chỉ chuyển TCP (không thêm tiêu đề, không chặn đường dẫn).
-# ---------------------------------------------------------------------------
-frontend fe_http
-    bind {{ haproxy_bind_address }}:{{ haproxy_http_port }}
-    mode http
-    http-request redirect scheme https code 301
-
-frontend fe_https
-    bind {{ haproxy_bind_address }}:{{ haproxy_https_port }}
-    mode tcp
-    option tcplog
-    tcp-request inspect-delay 5s
-    tcp-request content accept if { req_ssl_hello_type 1 }
-    default_backend be_ingress
-
-backend be_ingress
-    mode tcp
-    balance roundrobin
-    option redispatch
-    retries 2
-{% for server in haproxy_ingress_servers %}
-    server ingress{{ loop.index }} {{ server }} check {{ haproxy_ingress_check }}
-{% endfor %}
+    # Chia theo đường dẫn (thay Ingress)
+    acl p_api path -m str /api
+    acl p_api path_beg /api/ /oauth2/ /login/oauth2/
+    acl p_auth path -m str /auth
+    acl p_auth path_beg /auth/
+    acl p_otlp path_beg /otlp/
+    acl p_ban_cai path_beg /ban-cai/
+{% if not haproxy_nodeport_otlp %}
+    # Chưa có cổng nhận trace: trả 503 (ứng dụng tự ngừng gửi), không rơi về web.
+    http-request return status 503 if p_otlp
 {% endif %}
+{% if not haproxy_nodeport_ban_cai %}
+    # Chưa có nơi chứa bộ cài máy tính: 404, không rơi về web.
+    http-request deny deny_status 404 if p_ban_cai
+{% endif %}
+    use_backend be_api if p_api
+    use_backend be_keycloak if p_auth
+{% if haproxy_nodeport_otlp %}
+    use_backend be_otlp if p_otlp
+{% endif %}
+{% if haproxy_nodeport_ban_cai %}
+    use_backend be_ban_cai if p_ban_cai
+{% endif %}
+    default_backend be_web
+
+    # Tiêu đề bảo mật (ATTT): giữ giá trị riêng nếu API/Keycloak đã gửi. http-after-response để áp cả cho
+    # trang HAProxy tự sinh (404 chặn quản trị, 503 khi dịch vụ chết), không chỉ phản hồi từ ứng dụng.
+    http-after-response del-header Server
+    http-after-response del-header X-Powered-By
+    http-after-response set-header Strict-Transport-Security "max-age={{ haproxy_hsts_max_age }}"
+    http-after-response set-header X-Content-Type-Options nosniff if !{ res.hdr(X-Content-Type-Options) -m found }
+    http-after-response set-header Referrer-Policy strict-origin-when-cross-origin if !{ res.hdr(Referrer-Policy) -m found }
+    http-after-response set-header X-Frame-Options SAMEORIGIN if !{ res.hdr(X-Frame-Options) -m found }
+
+# ---------------------------------------------------------------------------
+# NodePort trên các nút Kubernetes (kiểm tra sức khỏe từng nút, nút hỏng tự bỏ qua)
+# ---------------------------------------------------------------------------
+{% for b in haproxy_backends %}
+backend be_{{ b.name }}
+    mode http
+    balance roundrobin
+    option redispatch
+    retries 2
+{% if b.check_path %}
+    option httpchk GET {{ b.check_path }}
+    http-check expect status 200
+{% endif %}
+{% for node in haproxy_k8s_nodes %}
+    server {{ b.name }}{{ loop.index }} {{ node }}:{{ b.port }}
+{% endfor %}
+
+{% endfor %}

@@ -5,7 +5,7 @@ Ansible cài hai thành phần hạ tầng cho hệ thống chạy trên cụm K
 | Thư mục | Cài gì | Số máy |
 |---|---|---|
 | [`redis/`](redis/) | Redis 7.4 (kho `packages.redis.io`, ghim dòng 7.4) + Sentinel. Cấu hình sẵn cho hàng đợi BullMQ (`noeviction`, AOF) | 3 |
-| [`haproxy/`](haproxy/) | HAProxy (kho Ubuntu, 24.04 là dòng LTS 2.8), 2 máy chạy song song, cổng vào từ Internet đẩy vào Ingress cụm Kubernetes | 2 |
+| [`haproxy/`](haproxy/) | HAProxy (kho Ubuntu, 24.04 là dòng LTS 2.8), 2 máy chạy song song sau WAF (hoặc nhận thẳng từ Internet), giữ TLS và chia theo đường dẫn tới NodePort các dịch vụ Kubernetes (cụm không có Ingress) | 2 |
 
 MariaDB không nằm ở đây (bên khác cài).
 
@@ -21,8 +21,9 @@ Không dùng VIP/keepalived.
 ```mermaid
 
 flowchart LR
-   U["Internet"] -->|"HTTPS 443 / HTTP 80 → 443 (DNS / tường lửa)"| H1
-   U --> H2
+   U["Internet"] -->|"HTTPS 443"| W["WAF (TLS *.dcs.vn)"]
+   W -->|"HTTPS 443, chỉ IP WAF"| H1
+   W --> H2
 
    subgraph HA["HAProxy (2 máy chạy song song)"]
       direction TB
@@ -30,13 +31,16 @@ flowchart LR
       H2["HAProxy-2"]
    end
 
-   H1 --> I["Kubernetes Ingress"]
-   H2 --> I
-
-   subgraph K8S["Kubernetes Cluster"]
+   subgraph K8S["Kubernetes Cluster (NodePort, không Ingress)"]
       direction TB
-      I --> APP["API / Worker"]
+      WEB["web"]
+      API["API / Worker"]
+      KC["Keycloak"]
    end
+
+   H1 & H2 -->|"/"| WEB
+   H1 & H2 -->|"/api /oauth2 /login/oauth2"| API
+   H1 & H2 -->|"/auth"| KC
 
    APP -->|"REDIS_URL: IP master / TCP 6379"| R1
 
@@ -87,7 +91,7 @@ flowchart LR
 
 - SSH (22) từ máy chạy Ansible tới cả 5 máy.
 - Redis: mở 6379 và 26379 giữa 3 máy Redis, và 6379 từ các nút Kubernetes tới IP nội bộ của cả 3 máy (master có thể đổi).
-- HAProxy: mở 80, 443 từ Internet tới cả hai máy; từ HAProxy tới cổng Ingress của các nút Kubernetes; 8404 (thống kê, `/metrics`) chỉ từ máy giám sát.
+- HAProxy: mở 443 từ dải IP của WAF (hoặc 80, 443 từ Internet nếu không có WAF) tới cả hai máy; từ HAProxy tới NodePort của web, api, keycloak (và otel, nơi chứa bộ cài nếu có) trên các nút Kubernetes; 8404 (thống kê, `/metrics`) chỉ từ máy giám sát.
 - Máy chủ ra được Internet: Redis cần `packages.redis.io`, cả hai nhóm cần kho Ubuntu.
 
 ## Chạy
@@ -157,7 +161,7 @@ Gói chứa mật khẩu nên **không** đưa vào repo. Thay vào đó, sinh g
    EOF
    chmod 600 .env
    ```
-   Máy HAProxy dùng `HAPROXY_TLS_MODE=terminate` thì dán thêm chứng chỉ, đúng đường dẫn ghi ở `HAPROXY_TLS_PEM_FILE` (ví dụ `/root/site.pem`): `cat > /root/site.pem <<'EOF'` … `EOF`, rồi `chmod 600 /root/site.pem`.
+   Máy HAProxy dán thêm chứng chỉ, đúng đường dẫn ghi ở `HAPROXY_TLS_PEM_FILE` (ví dụ `/root/site.pem`): `cat > /root/site.pem <<'EOF'` … `EOF`, rồi `chmod 600 /root/site.pem`.
 3. Cài. Script tự nhận ra máy này là máy nào (so IP máy với `REDIS_n_IP` / `HAPROXY_n_IP`), tự cài `ansible-core` từ kho Ubuntu nếu chưa có, sinh cấu hình cho riêng máy này rồi chạy `install.sh`:
    ```bash
    sudo scripts/install-here.sh redis
@@ -204,17 +208,32 @@ Bước `verify` thử đúng các lệnh ứng dụng dùng, qua IP master: `PI
 - `min-replicas-to-write 1`: master ngừng nhận ghi khi không còn replica nào theo kịp trong 10 giây, để hạn chế mất dữ liệu khi tách mạng. Hệ quả: nếu mất cùng lúc 2 replica thì hàng đợi dừng ghi. Đặt `-e redis_min_replicas_to_write=0` nếu ưu tiên sẵn sàng hơn.
 - Khi Sentinel chuyển master, máy master cũ thành replica (chỉ đọc): ứng dụng ghi sẽ lỗi cho tới khi đổi `REDIS_URL` sang master mới. Nên theo dõi master bằng `SENTINEL get-master-addr-by-name` và cảnh báo khi đổi.
 
-## HAProxy — chế độ TLS
+## HAProxy — chia đường dẫn, WAF
 
-`HAPROXY_TLS_MODE` trong `.env`:
+Cụm Kubernetes không có Ingress, nên HAProxy giữ TLS (`HAPROXY_TLS_PEM_FILE`: chứng chỉ + chuỗi trung gian + khóa riêng) và chia theo đường dẫn tới NodePort của từng dịch vụ trên các nút `HAPROXY_K8S_NODES`:
 
-| | `terminate` (mặc định) | `passthrough` |
+| Đường dẫn | Dịch vụ (biến NodePort) | Kiểm tra sức khỏe |
 |---|---|---|
-| Chứng chỉ | Ở HAProxy (`HAPROXY_TLS_PEM_FILE`: chứng chỉ + chuỗi trung gian + khóa riêng, trên máy điều khiển) | Ở Ingress |
-| Ingress nhận | HTTP | HTTPS |
-| `X-Forwarded-Proto/Host/Port/For` | HAProxy gắn (Keycloak `KC_PROXY_HEADERS=xforwarded`, API `forward-headers-strategy` cần) | Ingress phải tự gắn |
-| Chặn `/auth/admin`, `/auth/realms/master` từ Internet | Có (trả 404) | Không, phải chặn ở Ingress |
-| Tiêu đề bảo mật (HSTS, nosniff, X-Frame-Options, Referrer-Policy, bỏ `Server`) | Có | Không |
+| `/api/*`, `/oauth2/*`, `/login/oauth2/*` | api (`HAPROXY_NODEPORT_API`) | `GET /actuator/health` = 200 |
+| `/auth/*` (trừ `/auth/admin*`, `/auth/realms/master*`: chặn 404) | keycloak (`HAPROXY_NODEPORT_KEYCLOAK`) | TCP |
+| `/otlp/*` | otel (`HAPROXY_NODEPORT_OTLP`, để trống thì trả 503) | TCP |
+| `/ban-cai/*` | nơi chứa bộ cài máy tính (`HAPROXY_NODEPORT_BAN_CAI`, để trống thì trả 404) | TCP |
+| còn lại | web (`HAPROXY_NODEPORT_WEB`) | `GET /` = 200 |
+
+Nút nào không qua kiểm tra sức khỏe thì HAProxy tự bỏ qua. `verify` báo số nút UP của từng dịch vụ.
+
+**Có WAF đứng trước** (`HAPROXY_WAF_RANGES` = dải IP WAF gọi về máy gốc):
+
+- Chỉ các dải đó được vào 443; nguồn khác bị ngắt ngay khi kết nối, nên không ai đi vòng qua WAF được.
+- Không mở cổng 80; WAF tự chuyển HTTP sang HTTPS.
+- IP người dùng lấy từ địa chỉ **cuối cùng** trong `X-Forwarded-For`, tức địa chỉ WAF gắn vào. Phần đầu do trình duyệt tự đặt được nên không tin. HAProxy ghi lại `X-Forwarded-For` và `X-Real-IP` chỉ còn đúng IP đó.
+
+**Không có WAF** (`HAPROXY_WAF_RANGES` để trống): người dùng vào thẳng, mở 80 → 443, IP người dùng là IP nguồn.
+
+Cả hai trường hợp:
+
+- HAProxy gắn `X-Forwarded-Proto: https`, `X-Forwarded-Host`, `X-Forwarded-Port`; Keycloak (`KC_PROXY_HEADERS=xforwarded`) và API (`forward-headers-strategy`) cần các tiêu đề này.
+- Tiêu đề bảo mật (HSTS, `nosniff`, `X-Frame-Options`, `Referrer-Policy`, bỏ `Server`) áp cho mọi phản hồi, kể cả trang 404/503 do HAProxy tự sinh.
 
 Một số giá trị đã chỉnh sẵn cho ứng dụng:
 

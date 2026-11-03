@@ -15,15 +15,19 @@ done
 haproxy -c -q -f '{{ config_dir }}/haproxy.cfg' && ok "haproxy.cfg hợp lệ" || bad "haproxy.cfg lỗi"
 
 echo "== Cổng"
-for p in {{ haproxy_http_port }} {{ haproxy_https_port }}; do
+ports=({{ haproxy_https_port }}{{ '' if haproxy_behind_waf | bool else ' ' ~ haproxy_http_port }})
+for p in "${ports[@]}"; do
   timeout 3 bash -c "</dev/tcp/127.0.0.1/$p" 2>/dev/null && ok "đang nghe $p" || bad "không nghe $p"
 done
 timeout 3 bash -c "</dev/tcp/{{ haproxy_ip }}/{{ haproxy_stats_port }}" 2>/dev/null && ok "thống kê {{ haproxy_ip }}:{{ haproxy_stats_port }}" || bad "không nghe {{ haproxy_ip }}:{{ haproxy_stats_port }}"
 
-{% if haproxy_tls_mode == 'terminate' %}
 echo "== HTTP"
+{% if haproxy_behind_waf | bool %}
+timeout 3 bash -c "</dev/tcp/127.0.0.1/{{ haproxy_http_port }}" 2>/dev/null && bad "cổng {{ haproxy_http_port }} vẫn mở (sau WAF không cần)" || ok "không mở cổng {{ haproxy_http_port }} (WAF tự chuyển HTTP → HTTPS)"
+{% else %}
 code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:{{ haproxy_http_port }}/)
 [ "${code}" = 301 ] && ok "80 chuyển sang HTTPS" || bad "80 trả ${code}, cần 301"
+{% endif %}
 code=$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:{{ haproxy_https_port }}/auth/admin/)
 [ "${code}" = 404 ] && ok "/auth/admin bị chặn" || bad "/auth/admin trả ${code}, cần 404"
 hdr=$(curl -sk -D - -o /dev/null https://127.0.0.1:{{ haproxy_https_port }}/ | tr -d '\r')
@@ -32,15 +36,20 @@ grep -qi '^server:' <<<"${hdr}" && bad "còn lộ tiêu đề Server" || ok "kh�
 end=$(echo | openssl s_client -connect 127.0.0.1:{{ haproxy_https_port }} 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
 [ -n "${end}" ] && ok "chứng chỉ hết hạn: ${end}" || bad "không đọc được chứng chỉ"
 echo | openssl s_client -connect 127.0.0.1:{{ haproxy_https_port }} -tls1_1 >/dev/null 2>&1 && bad "vẫn nhận TLS 1.1" || ok "từ chối TLS 1.1"
+{% if not haproxy_nodeport_otlp %}
+code=$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:{{ haproxy_https_port }}/otlp/v1/traces)
+[ "${code}" = 503 ] && ok "/otlp trả 503 (chưa cấu hình cổng nhận trace)" || warn "/otlp trả ${code}"
 {% endif %}
 
-echo "== Ingress"
+echo "== Dịch vụ Kubernetes (NodePort trên {{ haproxy_k8s_nodes | length }} nút)"
 metrics=$(curl -s -u '{{ haproxy_stats_user }}:{{ haproxy_stats_password }}' http://{{ haproxy_ip }}:{{ haproxy_stats_port }}/metrics)
-up=$(grep -cE '^haproxy_server_status\{proxy="be_ingress",server="[^"]+",state="UP"\} 1' <<<"${metrics}")
-total={{ haproxy_ingress_servers | length }}
-if [ "${up}" = "${total}" ]; then ok "${up}/${total} Ingress UP"
-elif [ "${up}" -gt 0 ]; then warn "${up}/${total} Ingress UP (kiểm tra NodePort / tường lửa tới các nút còn lại)"
-else bad "0/${total} Ingress UP: HAProxy không tới được Ingress"; fi
+total={{ haproxy_k8s_nodes | length }}
+{% for b in haproxy_backends %}
+up=$(grep -cE '^haproxy_server_status\{proxy="be_{{ b.name }}",server="[^"]+",state="UP"\} 1' <<<"${metrics}")
+if [ "${up}" = "${total}" ]; then ok "{{ b.name }} (NodePort {{ b.port }}): ${up}/${total} nút UP"
+elif [ "${up}" -gt 0 ]; then warn "{{ b.name }} (NodePort {{ b.port }}): ${up}/${total} nút UP — kiểm tra các nút còn lại"
+else bad "{{ b.name }} (NodePort {{ b.port }}): 0/${total} nút UP — Service chưa chạy hoặc security group chặn"; fi
+{% endfor %}
 
 echo
 [ "${fail}" = 0 ] && echo "Tất cả đạt." || { echo "Có mục LỖI ở trên."; exit 1; }

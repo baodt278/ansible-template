@@ -23,20 +23,24 @@
     haproxy_iface_addr.rc != 0 or
     (' ' ~ haproxy_ip ~ '/') not in haproxy_iface_addr.stdout
 
-- name: Check Ingress backends are reachable from HAProxy
+- name: Check NodePorts are reachable from HAProxy
   ansible.builtin.wait_for:
-    host: "{{ item.split(':')[0] }}"
-    port: "{{ item.split(':')[1] | int }}"
+    host: "{{ item.1 }}"
+    port: "{{ item.0.port | int }}"
     timeout: 5
-  loop: "{{ haproxy_ingress_servers }}"
+  loop: "{{ haproxy_backends | product(haproxy_k8s_nodes) | list }}"
+  loop_control:
+    label: "{{ item.0.name }} {{ item.1 }}:{{ item.0.port }}"
   register: haproxy_backend_reach
   failed_when: false
 
-- name: Warn about unreachable Ingress backends
+- name: Warn about unreachable NodePorts
   ansible.builtin.debug:
-    msg: "WARNING: {{ inventory_hostname }} cannot reach Ingress {{ item.item }} (security group / NodePort?)."
+    msg: >-
+      WARNING: {{ inventory_hostname }} cannot reach {{ item.item.0.name }} at
+      {{ item.item.1 }}:{{ item.item.0.port }} (security group / Service chưa tạo?).
   loop: "{{ haproxy_backend_reach.results }}"
   loop_control:
-    label: "{{ item.item }}"
+    label: "{{ item.item.0.name }} {{ item.item.1 }}"
   # failed_when: false xóa cờ failed, nên nhận biết lỗi qua thông điệp của wait_for.
   when: (item.msg | default('')) is search('Timeout|refused|No route', ignorecase=True)

@@ -8,7 +8,6 @@
     mode: "0600"
   no_log: true
   register: haproxy_cert
-  when: haproxy_tls_mode == 'terminate'
 
 - name: Hash stats password
   ansible.builtin.import_tasks: haproxy-stats-hash.yml
