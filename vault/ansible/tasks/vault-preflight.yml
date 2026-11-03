@@ -1,0 +1,29 @@
+---
+- name: Validate variables
+  ansible.builtin.import_tasks: vault-validate.yml
+
+- name: Validate SSH host is set
+  ansible.builtin.assert:
+    that:
+      - ansible_host | length > 0
+    fail_msg: "{{ inventory_hostname }}: VAULT_1_SSH_HOST is empty in .env."
+
+- name: Validate operating system
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == 'Ubuntu'
+      - ansible_facts.distribution_major_version | int >= 22
+    fail_msg: "Expected Ubuntu 22.04+ (production: 24.04)."
+
+- name: Validate this host carries vault_ip
+  ansible.builtin.command: ip -o -4 addr show
+  register: vault_iface_addr
+  changed_when: false
+  failed_when: (' ' ~ vault_ip ~ '/') not in vault_iface_addr.stdout
+
+- name: Check Internet access to HashiCorp APT repository
+  ansible.builtin.uri:
+    url: "{{ vault_apt_key_url }}"
+    method: HEAD
+    timeout: 15
+  changed_when: false

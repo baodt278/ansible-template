@@ -1,0 +1,10 @@
+---
+- name: Run verify.sh
+  ansible.builtin.command: bash /opt/install/vault/verify.sh
+  register: vault_verify_out
+  changed_when: false
+  failed_when: vault_verify_out.rc != 0
+
+- name: Show verify result
+  ansible.builtin.debug:
+    msg: "{{ vault_verify_out.stdout_lines }}"

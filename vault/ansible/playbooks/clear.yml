@@ -1,0 +1,11 @@
+---
+# Gỡ để cài lại. Bắt buộc: -e confirm_clear=yes. Xóa cả dữ liệu, bản sao lưu: thêm -e clear_data=yes.
+- name: Clear Vault
+  hosts: vault
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Clear Vault installation
+      ansible.builtin.import_tasks: ../tasks/vault-clear.yml

@@ -1,0 +1,13 @@
+---
+- name: Vault preflight
+  hosts: vault
+  gather_facts: true
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Verify SSH connection and remote Python
+      ansible.builtin.ping:
+
+    - name: Run Vault preflight checks
+      ansible.builtin.import_tasks: ../tasks/vault-preflight.yml

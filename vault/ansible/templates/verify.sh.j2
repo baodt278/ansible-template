@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Kiểm tra Vault trên {{ inventory_hostname }}: bash verify.sh
+set -uo pipefail
+fail=0
+ok()  { printf '  [OK]   %s\n' "$*"; }
+bad() { printf '  [LỖI]  %s\n' "$*"; fail=1; }
+warn(){ printf '  [CHÚ Ý] %s\n' "$*"; }
+CA='{{ tls_dir }}/ca.crt'
+
+echo "== Dịch vụ"
+systemctl is-active --quiet vault && ok "vault đang chạy" || bad "vault không chạy"
+vault version | grep -q '^Vault v{{ vault_version_series }}\.' && ok "$(vault version | cut -d' ' -f1,2)" || bad "không phải Vault {{ vault_version_series }}.x"
+
+echo "== Mạng, TLS"
+for a in {{ vault_ip }} 127.0.0.1; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' --cacert "${CA}" "https://${a}:{{ vault_port }}/v1/sys/health")
+  [ "${code}" != 000 ] && ok "https://${a}:{{ vault_port }} trả lời, chứng chỉ hợp lệ theo CA nội bộ" || bad "https://${a}:{{ vault_port }} không trả lời / chứng chỉ sai"
+done
+end=$(openssl x509 -enddate -noout -in '{{ tls_dir }}/vault.crt' | cut -d= -f2)
+openssl x509 -checkend 2592000 -noout -in '{{ tls_dir }}/vault.crt' >/dev/null && ok "chứng chỉ Vault hết hạn: ${end}" || warn "chứng chỉ Vault sắp hết hạn (${end}): chạy lại cài đặt để gia hạn"
+# HTTP thường vào cổng TLS: Vault trả 400 ("Client sent an HTTP request to an HTTPS server") — đúng.
+code=$(curl -s -o /dev/null --max-time 3 -w '%{http_code}' "http://127.0.0.1:{{ vault_port }}/v1/sys/health")
+case "${code}" in 400|000) ok "chỉ nhận HTTPS (HTTP thường bị từ chối)";; *) bad "HTTP thường trả ${code}: còn nhận kết nối không mã hóa";; esac
+
+echo "== Lưu trữ"
+findmnt -no SOURCE '{{ vault_base_dir | dirname }}' >/dev/null && ok "{{ data_dir }} nằm trên ổ riêng $(findmnt -no SOURCE '{{ vault_base_dir | dirname }}')" || warn "{{ vault_base_dir | dirname }} chưa phải ổ riêng"
+stat -c '%U' '{{ data_dir }}' | grep -qx '{{ service_user }}' && ok "{{ data_dir }} thuộc {{ service_user }}" || bad "{{ data_dir }} sai chủ sở hữu"
+
+echo "== Trạng thái"
+code=$(curl -s -o /dev/null -w '%{http_code}' --cacert "${CA}" "https://127.0.0.1:{{ vault_port }}/v1/sys/health")
+case "${code}" in
+  200) ok "đã khởi tạo, đang mở (active)";;
+  501) warn "CHƯA KHỞI TẠO — làm bước khởi tạo (README mục Vault)";;
+  503) warn "đang KHÓA — mở khóa: vault operator unseal";;
+  *)   bad "mã trạng thái ${code}";;
+esac
+
+echo "== Sao lưu"
+[ -s '{{ config_dir }}/backup.token' ] && ok "có token sao lưu" || warn "chưa có {{ config_dir }}/backup.token: sao lưu hằng ngày đang bỏ qua"
+n=$(find '{{ backup_dir }}' -name 'vault-*.snap' 2>/dev/null | wc -l); [ "${n}" -gt 0 ] && ok "${n} bản sao lưu trong {{ backup_dir }}" || warn "chưa có bản sao lưu nào"
+
+echo
+[ "${fail}" = 0 ] && echo "Không có LỖI (các mục CHÚ Ý là việc còn phải làm tay)." || { echo "Có mục LỖI ở trên."; exit 1; }

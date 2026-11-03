@@ -7,6 +7,7 @@
 #   sudo scripts/install-here.sh redis verify     # kiểm tra cả cụm (sau khi đã cài đủ 3 máy)
 #   sudo scripts/install-here.sh haproxy
 #   sudo scripts/install-here.sh haproxy verify
+#   sudo scripts/install-here.sh vault            # Vault 1 nút (đặt chung máy Redis-1)
 #   scripts/install-here.sh redis bundle          # chỉ sinh cấu hình vào bundle/, không cài
 set -euo pipefail
 
@@ -20,11 +21,12 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 case "${SERVICE}" in
   redis)   PREFIX=REDIS;   COUNT=3 ;;
   haproxy) PREFIX=HAPROXY; COUNT=2 ;;
-  *) die "Usage: $0 <redis|haproxy> [install|verify|bundle]" ;;
+  vault)   PREFIX=VAULT;   COUNT=1 ;;
+  *) die "Usage: $0 <redis|haproxy|vault> [install|verify|bundle]" ;;
 esac
 case "${ACTION}" in
   install|verify|bundle) ;;
-  *) die "Usage: $0 <redis|haproxy> [install|verify|bundle]" ;;
+  *) die "Usage: $0 <redis|haproxy|vault> [install|verify|bundle]" ;;
 esac
 if [ "${ACTION}" != bundle ] && [ "$(id -u)" -ne 0 ]; then
   die "Run as root: sudo $0 ${SERVICE} ${ACTION}"

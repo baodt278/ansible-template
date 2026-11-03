@@ -1,0 +1,5 @@
+# {{ ansible_managed }}
+# shellcheck shell=sh
+# Dòng lệnh vault trên máy này: nói chuyện với Vault qua 127.0.0.1, tin CA nội bộ.
+export VAULT_ADDR='https://127.0.0.1:{{ vault_port }}'
+export VAULT_CACERT='{{ tls_dir }}/ca.crt'

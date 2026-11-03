@@ -1,0 +1,34 @@
+---
+- name: Require explicit confirmation
+  ansible.builtin.assert:
+    that:
+      - confirm_clear | default('') == 'yes'
+    fail_msg: "This stops Vault. Re-run with -e confirm_clear=yes (add -e clear_data=yes to also delete Raft data, backups and TLS)."
+
+- name: Stop and disable vault
+  ansible.builtin.systemd:
+    name: vault
+    state: stopped
+    enabled: false
+  failed_when: false
+
+- name: Remove managed files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/profile.d/vault.sh
+    - /etc/logrotate.d/vault
+    - /etc/cron.d/vault-backup
+    - /usr/local/sbin/vault-backup.sh
+    - /opt/install/vault
+
+- name: Remove data, backups and TLS (irreversible)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ vault_base_dir }}"
+    - "{{ tls_dir }}"
+    - "{{ config_dir }}/backup.token"
+  when: clear_data | default('') == 'yes'

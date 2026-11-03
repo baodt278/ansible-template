@@ -1,0 +1,31 @@
+# {{ ansible_managed }}
+# Vault 1 nút, lưu trữ Raft. Thêm nút sau: cùng cấu hình (node_id khác) + vault operator raft join.
+ui            = true
+cluster_name  = "{{ vault_cluster_name }}"
+# Raft khuyên tắt mlock (bộ nhớ của Raft đã ghi đĩa); swap của máy nên tắt.
+disable_mlock = true
+
+api_addr     = "https://{{ vault_ip }}:{{ vault_port }}"
+cluster_addr = "https://{{ vault_ip }}:{{ vault_cluster_port }}"
+
+storage "raft" {
+  path    = "{{ data_dir }}"
+  node_id = "{{ vault_node_id }}"
+}
+
+# IP nội bộ: cho ứng dụng (External Secrets trên Kubernetes) và người quản trị.
+listener "tcp" {
+  address         = "{{ vault_ip }}:{{ vault_port }}"
+  cluster_address = "{{ vault_ip }}:{{ vault_cluster_port }}"
+  tls_cert_file   = "{{ tls_dir }}/vault.crt"
+  tls_key_file    = "{{ tls_dir }}/vault.key"
+  tls_min_version = "tls12"
+}
+
+# Chính máy này (dòng lệnh vault, sao lưu).
+listener "tcp" {
+  address         = "127.0.0.1:{{ vault_port }}"
+  tls_cert_file   = "{{ tls_dir }}/vault.crt"
+  tls_key_file    = "{{ tls_dir }}/vault.key"
+  tls_min_version = "tls12"
+}

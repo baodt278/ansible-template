@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Sao lưu Raft hằng ngày vào {{ backup_dir }}, giữ {{ backup_retention_days }} ngày. Cần token ở {{ config_dir }}/backup.token
+# (quyền đọc sys/storage/raft/snapshot; xem README mục Vault). Nên chép thêm bản sao lưu ra máy khác.
+set -euo pipefail
+export VAULT_ADDR='https://127.0.0.1:{{ vault_port }}' VAULT_CACERT='{{ tls_dir }}/ca.crt'
+TOKEN_FILE='{{ config_dir }}/backup.token'
+if [ ! -s "${TOKEN_FILE}" ]; then echo "vault-backup: chưa có ${TOKEN_FILE}, bỏ qua"; exit 0; fi
+VAULT_TOKEN="$(cat "${TOKEN_FILE}")"; export VAULT_TOKEN
+vault token renew >/dev/null 2>&1 || true
+out='{{ backup_dir }}'/"vault-$(date +%Y%m%d-%H%M%S).snap"
+vault operator raft snapshot save "${out}"
+chmod 0600 "${out}"
+find '{{ backup_dir }}' -name 'vault-*.snap' -mtime '+{{ backup_retention_days }}' -delete
+echo "vault-backup: ${out} ($(du -h "${out}" | cut -f1))"

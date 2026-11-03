@@ -6,6 +6,7 @@ Ansible cài hai thành phần hạ tầng cho hệ thống chạy trên cụm K
 |---|---|---|
 | [`redis/`](redis/) | Redis 7.4 (kho `packages.redis.io`, ghim dòng 7.4) + Sentinel. Cấu hình sẵn cho hàng đợi BullMQ (`noeviction`, AOF) | 3 |
 | [`haproxy/`](haproxy/) | HAProxy (kho Ubuntu, 24.04 là dòng LTS 2.8), 2 máy chạy song song sau WAF (hoặc nhận thẳng từ Internet), giữ TLS và chia theo đường dẫn tới NodePort các dịch vụ Kubernetes (cụm không có Ingress) | 2 |
+| [`vault/`](vault/) | HashiCorp Vault 2.2 (kho apt.releases.hashicorp.com, ghim dòng 2.2), 1 nút, lưu trữ Raft trên ổ `/u01`, TLS bằng CA nội bộ tự tạo; đặt chung máy Redis-1. Lưu biến môi trường, bí mật cho ứng dụng | 1 |
 
 MariaDB không nằm ở đây (bên khác cài).
 
@@ -243,6 +244,64 @@ Một số giá trị đã chỉnh sẵn cho ứng dụng:
 
 Thống kê và Prometheus chỉ nghe trên IP nội bộ của máy: `http://<HAPROXY_n_IP>:8404/stats` và `/metrics`, đăng nhập bằng `HAPROXY_STATS_USER/PASSWORD`.
 
+## Vault — lưu biến môi trường, bí mật
+
+Một nút (Raft) đặt chung máy Redis-1 (`VAULT_1_IP`), dữ liệu ở `/u01/vault/data`, sao lưu ở `/u01/vault/backup`, nhật ký kiểm toán ở `/logs/vault`. Muốn HA sau này: thêm 2 nút cùng cấu hình (node_id khác) rồi `vault operator raft join`, không phải chuyển dữ liệu.
+
+**Cài** (trên Redis-1, root; `.env` chỉ cần 3 dòng `VAULT_`, không có mật khẩu):
+
+```bash
+cd /root/ansible-template && git pull && scripts/install-here.sh vault
+```
+
+Lần đầu kết quả báo **CHƯA KHỞI TẠO**. `install.sh` không tự khởi tạo, để khóa mở không bao giờ nằm trên đĩa máy chủ.
+
+**Khởi tạo** (một lần duy nhất, trên Redis-1):
+
+```bash
+. /etc/profile.d/vault.sh
+vault operator init -key-shares=5 -key-threshold=3
+```
+
+Lệnh in ra **5 khóa mở** và **token root**. Chép ngay ra nơi an toàn, chia cho 3–5 người giữ, rồi xóa khỏi màn hình. Mất quá 2 khóa là mất toàn bộ dữ liệu Vault.
+
+**Mở khóa** (sau khởi tạo và **sau mỗi lần Vault hoặc máy khởi động lại**): chạy 3 lần, mỗi lần một khóa khác nhau.
+
+```bash
+vault operator unseal
+```
+
+**Sau khởi tạo** (đăng nhập bằng token root, làm một lần):
+
+```bash
+vault login
+vault audit enable file file_path=/logs/vault/audit.log
+vault secrets enable -path=kv kv-v2
+vault policy write snapshot - <<'P'
+path "sys/storage/raft/snapshot" { capabilities = ["read"] }
+path "auth/token/renew-self" { capabilities = ["update"] }
+P
+vault token create -policy=snapshot -period=768h -orphan -field=token > /etc/vault.d/backup.token
+chmod 600 /etc/vault.d/backup.token
+/usr/local/sbin/vault-backup.sh
+```
+
+Từ đó sao lưu tự chạy 02:40 hằng ngày, giữ 14 ngày. Nên chép thêm bản sao lưu ra máy khác. Sau đó thu hồi token root (`vault token revoke <token root>`) và dùng tài khoản hoặc chính sách riêng cho từng người, từng ứng dụng.
+
+**Lưu biến của ứng dụng**, ví dụ:
+
+```bash
+vault kv put kv/vtvl/api REDIS_URL='redis://vtvl:…@10.1.29.6:6379' DB_PASSWORD='…'
+```
+
+Đưa vào Kubernetes bằng External Secrets Operator: trỏ `https://<VAULT_1_IP>:8200`, đưa nội dung `/etc/vault.d/tls/ca.crt` vào `caBundle`, xác thực bằng phương thức Kubernetes của Vault. Bí mật được chép thành Secret của cụm, nên pod đang chạy không phụ thuộc Vault còn sống hay không.
+
+**Mở cổng (security group):** TCP 8200 vào Redis-1 từ 6 nút VKE và máy quản trị. 8201 chỉ cần khi có từ 2 nút.
+
+**Kiểm tra:** `scripts/install-here.sh vault verify`. Các mục `CHÚ Ý` là việc còn phải làm tay (khởi tạo, mở khóa, token sao lưu).
+
+**Chứng chỉ:** CA nội bộ hạn 10 năm, chứng chỉ Vault hạn 2 năm. Chạy lại cài đặt khi còn dưới 30 ngày là tự cấp lại; CA giữ nguyên, nên bên kết nối không phải đổi `ca.crt`.
+
 ## Cấu trúc
 
 ```
@@ -257,6 +316,8 @@ redis/ansible/
   tasks/redis-*.yml
   templates/              # redis.conf, users.acl, sentinel.conf, unit systemd, sao lưu,
                           # install.sh / verify.sh của bundle
+vault/ansible/            # Vault 1 nút: setup qua SSH đưa bundle lên rồi chạy chính install.sh
+  templates/              # vault.hcl, tạo CA/chứng chỉ, sao lưu Raft, install.sh / verify.sh
 haproxy/ansible/
   inventory/hosts.yml     # 2 máy
   group_vars/all.yml

@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Cài Vault {{ vault_version_series }}.x (1 nút, Raft) trên {{ inventory_hostname }} ({{ vault_ip }}). Chạy bằng root: bash install.sh
+# Chạy lại an toàn. Sau lần đầu: khởi tạo, mở khóa bằng tay (README mục Vault).
+set -euo pipefail
+umask 027
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+F="${HERE}/files"
+log() { printf '\n==> %s\n' "$*"; }
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+MY_IP='{{ vault_ip }}'
+
+# --------------------------------------------------------------------------
+log "Kiểm tra máy"
+# --------------------------------------------------------------------------
+[ "$(id -u)" -eq 0 ] || die "Phải chạy bằng root."
+. /etc/os-release
+[ "${ID}" = ubuntu ] || die "Cần Ubuntu, máy này là ${PRETTY_NAME}."
+ip -o -4 addr show 2>/dev/null | grep -q " ${MY_IP}/" || die "Máy này không có IP ${MY_IP}: chạy nhầm máy, hoặc VAULT_1_IP trong .env sai."
+for d in '{{ vault_base_dir | dirname }}' '{{ log_dir | dirname }}'; do
+  [ -d "$d" ] || die "Thiếu thư mục $d (gắn đĩa trước)."
+done
+mountpoint -q '{{ vault_base_dir | dirname }}' || printf 'WARNING: %s chưa phải ổ riêng (đang nằm trên ổ hệ điều hành)\n' '{{ vault_base_dir | dirname }}' >&2
+ss -ltnp 2>/dev/null | grep -E ":{{ vault_port }} " | grep -vq vault && die "Cổng {{ vault_port }} đang bị chương trình khác chiếm: $(ss -ltnp | grep ':{{ vault_port }} ')"
+
+# --------------------------------------------------------------------------
+log "Cài gói (apt.releases.hashicorp.com, ghim {{ vault_version_series }}.x)"
+# --------------------------------------------------------------------------
+export DEBIAN_FRONTEND=noninteractive
+command -v curl >/dev/null || { apt-get update -q; apt-get install -y -q curl ca-certificates; }
+install -d -m 0755 '{{ vault_apt_keyring | dirname }}'
+curl -fsSL '{{ vault_apt_key_url }}' -o '{{ vault_apt_keyring }}'
+chmod 0644 '{{ vault_apt_keyring }}'
+echo "deb [signed-by={{ vault_apt_keyring }}] {{ vault_apt_repo_url }} ${VERSION_CODENAME} main" > /etc/apt/sources.list.d/hashicorp.list
+cat > /etc/apt/preferences.d/vault <<'PIN'
+Package: vault
+Pin: version {{ vault_version_series }}.*
+Pin-Priority: 1001
+PIN
+chmod 0644 /etc/apt/sources.list.d/hashicorp.list /etc/apt/preferences.d/vault
+apt-get update -q
+apt-get install -y -q --no-install-recommends --allow-downgrades \
+  -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+  {{ vault_packages | join(' ') }}
+vault version | grep -q '^Vault v{{ vault_version_series }}\.' || die "Vault không phải {{ vault_version_series }}.x: $(vault version)"
+
+# --------------------------------------------------------------------------
+log "Thư mục, chứng chỉ, cấu hình"
+# --------------------------------------------------------------------------
+id '{{ service_user }}' >/dev/null 2>&1 || die "Gói vault chưa tạo user {{ service_user }}."
+install -d -o '{{ service_user }}' -g '{{ service_group }}' -m 0750 '{{ vault_base_dir }}' '{{ data_dir }}' '{{ log_dir }}'
+install -d -o root -g root -m 0700 '{{ backup_dir }}'
+bash "${F}/vault-tls.sh"
+changed=0
+if ! cmp -s "${F}/vault.hcl" '{{ config_dir }}/vault.hcl'; then
+  install -m 0640 -o root -g '{{ service_group }}' "${F}/vault.hcl" '{{ config_dir }}/vault.hcl'; changed=1
+fi
+install -m 0644 -o root -g root "${F}/vault-profile.sh" /etc/profile.d/vault.sh
+install -m 0644 -o root -g root "${F}/vault.logrotate" /etc/logrotate.d/vault
+
+# --------------------------------------------------------------------------
+log "Dịch vụ vault"
+# --------------------------------------------------------------------------
+systemctl daemon-reload
+systemctl enable vault >/dev/null
+if ! systemctl is-active --quiet vault; then systemctl start vault
+elif [ "${changed}" = 1 ]; then systemctl restart vault; echo "cấu hình đổi: đã khởi động lại — Vault đang KHÓA, cần mở khóa lại"
+fi
+export VAULT_ADDR='https://127.0.0.1:{{ vault_port }}' VAULT_CACERT='{{ tls_dir }}/ca.crt'
+for _ in $(seq 1 30); do code=$(curl -s -o /dev/null -w '%{http_code}' --cacert "${VAULT_CACERT}" "${VAULT_ADDR}/v1/sys/health" || true); [ "${code}" != 000 ] && break; sleep 2; done
+[ "${code}" != 000 ] || die "Vault không trả lời ở ${VAULT_ADDR}. Xem: journalctl -u vault -n 50"
+
+# --------------------------------------------------------------------------
+log "Sao lưu hằng ngày"
+# --------------------------------------------------------------------------
+install -m 0700 -o root -g root "${F}/vault-backup.sh" /usr/local/sbin/vault-backup.sh
+bash -n /usr/local/sbin/vault-backup.sh
+install -m 0644 -o root -g root "${F}/vault-backup.cron" /etc/cron.d/vault-backup
+
+# --------------------------------------------------------------------------
+log "Kết quả trên {{ inventory_hostname }}"
+# --------------------------------------------------------------------------
+echo "  vault      $(systemctl is-active vault)"
+echo "  $(vault version)"
+case "${code}" in
+  200) echo "  Trạng thái: đã khởi tạo, ĐANG MỞ (active)";;
+  501) echo "  Trạng thái: CHƯA KHỞI TẠO — làm bước khởi tạo (README mục Vault)";;
+  503) echo "  Trạng thái: đã khởi tạo, ĐANG KHÓA — mở khóa: vault operator unseal (đủ số khóa)";;
+  *)   echo "  Trạng thái: mã ${code} (xem: vault status)";;
+esac
+echo "  Địa chỉ: https://{{ vault_ip }}:{{ vault_port }} — CA cho bên kết nối: {{ tls_dir }}/ca.crt"
+echo
+echo "Kiểm tra: cd /root/ansible-template && scripts/install-here.sh vault verify"

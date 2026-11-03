@@ -1,0 +1,18 @@
+---
+# Qua SSH: đưa đúng bộ tệp của bundle (cấu hình + install.sh) lên máy rồi chạy install.sh, nên cài qua SSH
+# và cài tay (install-here.sh) dùng chung một kịch bản.
+- name: Setup Vault
+  hosts: vault
+  gather_facts: true
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Run Vault preflight checks
+      ansible.builtin.import_tasks: ../tasks/vault-preflight.yml
+
+    - name: Deploy bundle and run install.sh
+      ansible.builtin.import_tasks: ../tasks/vault-deploy.yml
+
+    - name: Verify Vault
+      ansible.builtin.import_tasks: ../tasks/vault-verify.yml

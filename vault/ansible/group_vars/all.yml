@@ -1,0 +1,42 @@
+---
+# =============================================================================
+# HashiCorp Vault — 1 nút, lưu trữ Raft (Integrated Storage), TLS bằng CA nội bộ tự tạo trên máy.
+# Cài trực tuyến từ apt.releases.hashicorp.com. Không có bí mật nào trong .env: khởi tạo và mở khóa
+# (unseal) làm bằng tay để khóa mở không bao giờ nằm trên đĩa máy chủ.
+# =============================================================================
+
+templates_dir: "{{ playbook_dir }}/../templates"
+
+# Gói: ghim dòng phiên bản (số của HashiCorp không có epoch, mẫu "2.2.*" apt hiểu đúng).
+vault_version_series: "2.2"
+vault_apt_key_url: https://apt.releases.hashicorp.com/gpg
+vault_apt_keyring: /etc/apt/keyrings/hashicorp-archive-keyring.asc
+vault_apt_repo_url: https://apt.releases.hashicorp.com
+vault_packages:
+  - vault
+  - jq
+  - logrotate
+  - ca-certificates
+
+service_user: vault
+service_group: vault
+config_dir: /etc/vault.d
+tls_dir: /etc/vault.d/tls
+# Ổ riêng /u01 (Redis dùng /data, /logs).
+vault_base_dir: /u01/vault
+data_dir: "{{ vault_base_dir }}/data"
+backup_dir: "{{ vault_base_dir }}/backup"
+log_dir: /logs/vault
+
+vault_port: 8200
+vault_cluster_port: 8201
+vault_cluster_name: vtvl
+# Tên đưa thêm vào chứng chỉ (tùy chọn), vd vault.noibo nếu có DNS nội bộ.
+vault_hostname: "{{ lookup('ansible.builtin.env', 'VAULT_HOSTNAME') }}"
+# Hạn chứng chỉ: CA 10 năm, chứng chỉ Vault 2 năm (gia hạn: xóa vault.crt rồi chạy lại cài đặt).
+vault_ca_days: 3650
+vault_cert_days: 730
+
+# Sao lưu Raft hằng ngày; cần token có quyền đọc sys/storage/raft/snapshot ở /etc/vault.d/backup.token.
+backup_cron: "40 2 * * *"
+backup_retention_days: 14

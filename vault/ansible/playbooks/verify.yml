@@ -1,0 +1,10 @@
+---
+- name: Verify Vault
+  hosts: vault
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Verify Vault
+      ansible.builtin.import_tasks: ../tasks/vault-verify.yml

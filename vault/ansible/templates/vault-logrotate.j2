@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+# Nhật ký kiểm toán (bật sau khi khởi tạo: vault audit enable file file_path={{ log_dir }}/audit.log).
+{{ log_dir }}/*.log {
+    daily
+    rotate 30
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0600 {{ service_user }} {{ service_group }}
+    postrotate
+        systemctl reload vault >/dev/null 2>&1 || true
+    endscript
+}

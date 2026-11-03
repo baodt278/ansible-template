@@ -1,0 +1,56 @@
+---
+# Không SSH: sinh trên máy điều khiển (hoặc ngay trên máy chủ qua scripts/install-here.sh vault) thư mục
+# bundle/vault/<máy>/ gồm tệp cấu hình + install.sh + verify.sh, rồi chạy bằng root trên đúng máy đó.
+- name: Build Vault install bundle
+  hosts: vault
+  connection: local
+  gather_facts: false
+  become: false
+  vars_files:
+    - ../group_vars/all.yml
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+    bundle_root: "{{ playbook_dir | dirname | dirname | dirname }}/bundle/vault"
+    bundle_dir: "{{ bundle_root }}/{{ inventory_hostname }}"
+  tasks:
+    - name: Validate variables
+      ansible.builtin.import_tasks: ../tasks/vault-validate.yml
+
+    - name: Remove previous bundle of this host
+      ansible.builtin.file:
+        path: "{{ bundle_dir }}"
+        state: absent
+
+    - name: Create bundle directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0700"
+      loop:
+        - "{{ bundle_root }}"
+        - "{{ bundle_dir }}"
+        - "{{ bundle_dir }}/files"
+
+    - name: Render configuration files
+      ansible.builtin.template:
+        src: "{{ templates_dir }}/{{ item.src }}"
+        dest: "{{ bundle_dir }}/files/{{ item.dest }}"
+        mode: "0600"
+      loop:
+        - { src: vault.hcl.j2, dest: vault.hcl }
+        - { src: vault-tls.sh.j2, dest: vault-tls.sh }
+        - { src: vault-profile.sh.j2, dest: vault-profile.sh }
+        - { src: vault-backup.sh.j2, dest: vault-backup.sh }
+        - { src: vault-cron.j2, dest: vault-backup.cron }
+        - { src: vault-logrotate.j2, dest: vault.logrotate }
+      loop_control:
+        label: "{{ item.dest }}"
+
+    - name: Render install and verify scripts
+      ansible.builtin.template:
+        src: "{{ templates_dir }}/{{ item }}.j2"
+        dest: "{{ bundle_dir }}/{{ item }}"
+        mode: "0700"
+      loop:
+        - install.sh
+        - verify.sh

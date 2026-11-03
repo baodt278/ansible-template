@@ -1,0 +1,48 @@
+---
+- name: Create remote bundle directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - /opt/install/vault
+    - /opt/install/vault/files
+
+- name: Render configuration files
+  ansible.builtin.template:
+    src: "{{ templates_dir }}/{{ item.src }}"
+    dest: "/opt/install/vault/files/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop:
+    - { src: vault.hcl.j2, dest: vault.hcl }
+    - { src: vault-tls.sh.j2, dest: vault-tls.sh }
+    - { src: vault-profile.sh.j2, dest: vault-profile.sh }
+    - { src: vault-backup.sh.j2, dest: vault-backup.sh }
+    - { src: vault-cron.j2, dest: vault-backup.cron }
+    - { src: vault-logrotate.j2, dest: vault.logrotate }
+  loop_control:
+    label: "{{ item.dest }}"
+
+- name: Render install and verify scripts
+  ansible.builtin.template:
+    src: "{{ templates_dir }}/{{ item }}.j2"
+    dest: "/opt/install/vault/{{ item }}"
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - install.sh
+    - verify.sh
+
+- name: Run install.sh
+  ansible.builtin.command: bash /opt/install/vault/install.sh
+  register: vault_install_out
+  changed_when: true
+
+- name: Show install result
+  ansible.builtin.debug:
+    msg: "{{ vault_install_out.stdout_lines[-8:] }}"
