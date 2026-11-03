@@ -291,7 +291,7 @@ Từ đó sao lưu tự chạy 02:40 hằng ngày, giữ 14 ngày. Nên chép th
 **Lưu biến của ứng dụng**, ví dụ:
 
 ```bash
-vault kv put kv/vtvl/api REDIS_URL='redis://vtvl:…@10.1.29.6:6379' DB_PASSWORD='…'
+vault kv put kv/vtvl/api REDIS_URL='redis://vtvl:…@<IP master Redis>:6379' DB_PASSWORD='…'
 ```
 
 Đưa vào Kubernetes bằng External Secrets Operator: trỏ `https://<VAULT_1_IP>:8200`, đưa nội dung `/etc/vault.d/tls/ca.crt` vào `caBundle`, xác thực bằng phương thức Kubernetes của Vault. Bí mật được chép thành Secret của cụm, nên pod đang chạy không phụ thuộc Vault còn sống hay không.
