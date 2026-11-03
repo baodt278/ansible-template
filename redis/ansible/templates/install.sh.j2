@@ -15,6 +15,17 @@ warn() { printf 'WARNING: %s\n' "$*" >&2; }
 
 MY_IP='{{ redis_ip }}'
 MASTER_IP='{{ redis_current_master_ip }}'
+CONF_DIR='{{ config_dir }}'
+REDIS_SVC='{{ redis_service_name }}'
+SENTINEL_SVC='{{ sentinel_service_name }}'
+SENTINEL_CONF='{{ sentinel_dir }}/sentinel.conf'
+
+# --------------------------------------------------------------------------
+log "Kiểm tra máy"
+# --------------------------------------------------------------------------
+[ "$(id -u)" -eq 0 ] || die "Phải chạy bằng root (sudo bash install.sh)."
+. /etc/os-release
+[ "${ID}" = ubuntu ] || die "Cần Ubuntu, máy này là ${PRETTY_NAME}."
 ip -o -4 addr show 2>/dev/null | grep -q " ${MY_IP}/" \
   || die "Máy này không có IP ${MY_IP}: chạy nhầm máy, hoặc REDIS_*_IP trong .env sai."
 for d in '{{ data_dir | dirname }}' '{{ log_dir | dirname }}' '{{ backup_dir | dirname }}'; do
