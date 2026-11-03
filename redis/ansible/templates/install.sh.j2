@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # {{ ansible_managed }}
-# Cài Redis {{ redis_version_series }} + Sentinel{{ ' + VIP' if redis_vip_enabled | bool else '' }} cho {{ inventory_hostname }} ({{ redis_ip }}),
+# Cài Redis {{ redis_version_series }} + Sentinel cho {{ inventory_hostname }} ({{ redis_ip }}),
 # vai trò lúc cài: {{ 'MASTER' if redis_ip == redis_current_master_ip else 'REPLICA của ' ~ redis_current_master_ip }}.
 # Chạy bằng root trên chính máy này:  sudo bash install.sh
 # Thứ tự: máy master trước, rồi hai replica; xong cả ba thì chạy verify.sh. Chạy lại được nhiều lần.
@@ -15,27 +15,8 @@ warn() { printf 'WARNING: %s\n' "$*" >&2; }
 
 MY_IP='{{ redis_ip }}'
 MASTER_IP='{{ redis_current_master_ip }}'
-{% if redis_vip_enabled | bool %}
-IFACE='{{ redis_vip_interface }}'
-{% endif %}
-CONF_DIR='{{ config_dir }}'
-REDIS_SVC='{{ redis_service_name }}'
-SENTINEL_SVC='{{ sentinel_service_name }}'
-SENTINEL_CONF='{{ sentinel_dir }}/sentinel.conf'
-
-# --------------------------------------------------------------------------
-log "Kiểm tra máy"
-# --------------------------------------------------------------------------
-[ "$(id -u)" -eq 0 ] || die "Phải chạy bằng root (sudo bash install.sh)."
-. /etc/os-release
-[ "${ID}" = ubuntu ] || die "Cần Ubuntu, máy này là ${PRETTY_NAME}."
-{% if redis_vip_enabled | bool %}
-ip -o -4 addr show dev "${IFACE}" 2>/dev/null | grep -q " ${MY_IP}/" \
-  || die "Card ${IFACE} không mang IP ${MY_IP}: chạy nhầm máy, hoặc REDIS_VIP_INTERFACE/REDIS_*_IP trong .env sai."
-{% else %}
 ip -o -4 addr show 2>/dev/null | grep -q " ${MY_IP}/" \
   || die "Máy này không có IP ${MY_IP}: chạy nhầm máy, hoặc REDIS_*_IP trong .env sai."
-{% endif %}
 for d in '{{ data_dir | dirname }}' '{{ log_dir | dirname }}' '{{ backup_dir | dirname }}'; do
   [ -d "$d" ] || die "Thiếu thư mục $d (gắn đĩa trước)."
 done
@@ -133,23 +114,6 @@ put_file "${F}/${SENTINEL_SVC}.service" "/etc/systemd/system/${SENTINEL_SVC}.ser
 systemctl enable "${SENTINEL_SVC}" >/dev/null
 if [ "${sentinel_changed}" = 1 ]; then systemctl restart "${SENTINEL_SVC}"; else systemctl start "${SENTINEL_SVC}"; fi
 
-{% if redis_vip_enabled | bool %}
-# --------------------------------------------------------------------------
-log "VIP {{ redis_vip }} (keepalived đi theo master)"
-# --------------------------------------------------------------------------
-install -m 0700 -o root -g root "${F}/redis-vip-check.sh" /usr/local/sbin/redis-vip-check.sh
-bash -n /usr/local/sbin/redis-vip-check.sh
-install -d -m 0755 /etc/keepalived
-keepalived --config-test -f "${F}/keepalived.conf" >/dev/null 2>&1 || keepalived --config-test -f "${F}/keepalived.conf"
-if put_file "${F}/keepalived.conf" /etc/keepalived/keepalived.conf 0600 root:root; then
-  systemctl enable keepalived >/dev/null; systemctl restart keepalived
-else
-  systemctl enable --now keepalived >/dev/null
-fi
-
-{% else %}
-# Không có REDIS_VIP: không cài keepalived. Ứng dụng trỏ thẳng IP master (hoặc danh sách Sentinel).
-{% endif %}
 # --------------------------------------------------------------------------
 log "Sao lưu hằng ngày"
 # --------------------------------------------------------------------------
@@ -160,7 +124,7 @@ install -m 0644 -o root -g root "${F}/vtvl-redis-backup.cron" /etc/cron.d/vtvl-r
 # --------------------------------------------------------------------------
 log "Kết quả trên {{ inventory_hostname }}"
 # --------------------------------------------------------------------------
-for s in "${REDIS_SVC}" "${SENTINEL_SVC}"{{ ' keepalived' if redis_vip_enabled | bool else '' }}; do
+for s in "${REDIS_SVC}" "${SENTINEL_SVC}"; do
   printf '  %-24s %s\n' "$s" "$(systemctl is-active "$s")"
 done
 echo "  $(redis-server --version | awk '{print $1, $2, $3}')"

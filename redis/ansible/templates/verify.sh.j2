@@ -11,7 +11,7 @@ admin()    { REDISCLI_AUTH='{{ redis_admin_password }}' redis-cli -h "$1" -p '{{
 app()      { REDISCLI_AUTH='{{ redis_app_password }}' redis-cli -h "${ENTRY}" -p '{{ redis_port }}' --user '{{ redis_app_user }}' --no-auth-warning "$@"; }
 
 echo "== Dịch vụ trên máy này"
-for s in '{{ redis_service_name }}' '{{ sentinel_service_name }}'{{ " keepalived" if redis_vip_enabled | bool else "" }}; do
+for s in '{{ redis_service_name }}' '{{ sentinel_service_name }}'; do
   systemctl is-active --quiet "$s" && ok "$s đang chạy" || bad "$s không chạy"
 done
 
@@ -20,12 +20,8 @@ master="$(sentinel SENTINEL get-master-addr-by-name '{{ sentinel_master_name }}'
 [ -n "${master}" ] && ok "master theo Sentinel: ${master}" || bad "Sentinel không trả master"
 q="$(sentinel SENTINEL ckquorum '{{ sentinel_master_name }}' 2>&1)"
 [[ "${q}" == OK* ]] && ok "${q}" || bad "quorum: ${q}"
-{% if redis_vip_enabled | bool %}
-ENTRY='{{ redis_vip }}'
-{% else %}
-# Không có VIP: kiểm qua IP master hiện tại (ứng dụng cũng phải trỏ vào đây).
+# Ứng dụng trỏ vào IP master hiện tại: kiểm qua đúng địa chỉ đó.
 ENTRY="${master}"
-{% endif %}
 
 echo "== Nhân bản (qua ${ENTRY})"
 repl="$(admin "${ENTRY}" INFO replication 2>&1 | tr -d '\r')"
@@ -55,9 +51,7 @@ app CONFIG SET maxmemory 1 2>&1 | grep -q NOPERM && ok "CONFIG SET bị chặn" 
 echo
 if [ "${fail}" = 0 ]; then
   echo "Tất cả đạt. REDIS_URL=redis://{{ redis_app_user }}:<REDIS_APP_PASSWORD>@${ENTRY}:{{ redis_port }}"
-{% if not redis_vip_enabled | bool %}
-  echo "(Chưa có VIP: nếu Sentinel chuyển master, phải đổi REDIS_URL sang IP master mới.)"
-{% endif %}
+  echo "(Nếu Sentinel chuyển master, đổi REDIS_URL sang IP master mới.)"
 else
   echo "Có mục LỖI ở trên."; exit 1
 fi

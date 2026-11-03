@@ -15,8 +15,8 @@
       - ansible_facts.distribution_major_version | int >= 22
     fail_msg: "Expected Ubuntu 22.04+ (production: 24.04), found {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}."
 
-- name: Validate this host carries redis_ip (on the VIP interface when VIP is enabled)
-  ansible.builtin.command: ip -o -4 addr show {{ ('dev ' ~ redis_vip_interface) if redis_vip_enabled | bool else '' }}
+- name: Validate this host carries redis_ip
+  ansible.builtin.command: ip -o -4 addr show
   register: redis_iface_addr
   changed_when: false
   failed_when: >-

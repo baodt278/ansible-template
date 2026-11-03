@@ -1,5 +1,5 @@
 ---
-- name: Setup HAProxy (with keepalived when VIP is enabled)
+- name: Setup HAProxy
   hosts: haproxy
   gather_facts: true
   become: true
@@ -17,10 +17,6 @@
 
     - name: Configure HAProxy
       ansible.builtin.import_tasks: ../tasks/haproxy-configure.yml
-
-    - name: Configure HAProxy VIP failover
-      ansible.builtin.import_tasks: ../tasks/haproxy-failover.yml
-      when: haproxy_vip_enabled | bool
 
     - name: Verify HAProxy installation
       ansible.builtin.import_tasks: ../tasks/haproxy-verify.yml

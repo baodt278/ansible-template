@@ -62,18 +62,6 @@
       loop_control:
         label: "{{ item.dest }}"
 
-    - name: Render VIP files
-      ansible.builtin.template:
-        src: "{{ templates_dir }}/{{ item.src }}"
-        dest: "{{ bundle_dir }}/files/{{ item.dest }}"
-        mode: "0600"
-      loop:
-        - { src: redis-vip-check.sh.j2, dest: redis-vip-check.sh }
-        - { src: redis-keepalived.conf.j2, dest: keepalived.conf }
-      loop_control:
-        label: "{{ item.dest }}"
-      when: redis_vip_enabled | bool
-
     - name: Render install and verify scripts
       ansible.builtin.template:
         src: "{{ templates_dir }}/{{ item }}.j2"

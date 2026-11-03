@@ -8,7 +8,7 @@ bad() { printf '  [LỖI]  %s\n' "$*"; fail=1; }
 warn(){ printf '  [CHÚ Ý] %s\n' "$*"; }
 
 echo "== Dịch vụ"
-services=(haproxy{{ ' keepalived' if haproxy_vip_enabled | bool else '' }})
+services=(haproxy)
 for s in "${services[@]}"; do
   systemctl is-active --quiet "$s" && ok "$s đang chạy" || bad "$s không chạy"
 done
@@ -41,23 +41,6 @@ total={{ haproxy_ingress_servers | length }}
 if [ "${up}" = "${total}" ]; then ok "${up}/${total} Ingress UP"
 elif [ "${up}" -gt 0 ]; then warn "${up}/${total} Ingress UP (kiểm tra NodePort / tường lửa tới các nút còn lại)"
 else bad "0/${total} Ingress UP: HAProxy không tới được Ingress"; fi
-
-{% if haproxy_vip_enabled | bool %}
-echo "== VIP"
-if ip -o -4 addr show dev '{{ haproxy_vip_interface }}' | grep -q ' {{ haproxy_vip }}/'; then
-{% if role == 'active' %}
-  ok "máy active đang giữ VIP {{ haproxy_vip }}"
-{% else %}
-  warn "máy standby đang giữ VIP {{ haproxy_vip }} (máy active có chạy không?)"
-{% endif %}
-else
-{% if role == 'active' %}
-  bad "máy active không giữ VIP {{ haproxy_vip }}"
-{% else %}
-  ok "standby không giữ VIP (đúng)"
-{% endif %}
-fi
-{% endif %}
 
 echo
 [ "${fail}" = 0 ] && echo "Tất cả đạt." || { echo "Có mục LỖI ở trên."; exit 1; }

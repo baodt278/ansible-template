@@ -1,6 +1,6 @@
 ---
 # =============================================================================
-# Redis 7.4 + Sentinel (+ keepalived VIP nếu có REDIS_VIP) — 3 máy Ubuntu 24.04, cài trực tuyến
+# Redis 7.4 + Sentinel — 3 máy Ubuntu 24.04, cài trực tuyến
 # (máy chủ tải gói từ packages.redis.io). Bí mật đọc từ biến môi trường (.env).
 # =============================================================================
 
@@ -41,18 +41,7 @@ sentinel_service_name: vtvl-redis-sentinel
 cluster_group: redis
 redis_port: 6379
 sentinel_port: 26379
-# VIP là tùy chọn: để trống REDIS_VIP thì không cài keepalived, ứng dụng trỏ thẳng IP master
-# (hoặc dùng danh sách Sentinel). Điền VIP sau rồi chạy lại setup/bundle là có.
-redis_vip: "{{ lookup('ansible.builtin.env', 'REDIS_VIP') }}"
-redis_vip_enabled: "{{ redis_vip | length > 0 }}"
-redis_vip_prefix: "{{ lookup('ansible.builtin.env', 'REDIS_VIP_PREFIX') }}"
-redis_vip_interface: "{{ lookup('ansible.builtin.env', 'REDIS_VIP_INTERFACE') }}"
-redis_vrrp_router_id: "{{ lookup('ansible.builtin.env', 'REDIS_VRRP_ROUTER_ID') }}"
-redis_vrrp_auth_pass: "{{ lookup('ansible.builtin.env', 'REDIS_VRRP_AUTH_PASS') }}"
-redis_vrrp_priority: 100
-redis_install_packages: "{{ redis_packages + os_packages + (['keepalived'] if redis_vip_enabled | bool else []) }}"
-# Nút đang là master (theo Sentinel) được cộng thêm, nên VIP đi theo master.
-redis_vrrp_master_weight: 50
+redis_install_packages: "{{ redis_packages + os_packages }}"
 
 # -----------------------------------------------------------------------------
 # Sentinel

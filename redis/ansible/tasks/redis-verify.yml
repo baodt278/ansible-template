@@ -7,7 +7,9 @@
     that:
       - ansible_facts.services[item ~ '.service'].state | default('') == 'running'
     fail_msg: "{{ item }} is not running on {{ inventory_hostname }}."
-  loop: "{{ [redis_service_name, sentinel_service_name] + (['keepalived'] if redis_vip_enabled | bool else []) }}"
+  loop:
+    - "{{ redis_service_name }}"
+    - "{{ sentinel_service_name }}"
 
 - name: Read Redis version
   ansible.builtin.command: redis-server --version
@@ -45,22 +47,9 @@
   changed_when: false
   failed_when: redis_verify_quorum.stdout is not search('^OK')
 
-- name: Pick entry address (VIP, or the Sentinel master when no VIP)
+- name: Use the Sentinel master as entry address (the application points here)
   ansible.builtin.set_fact:
-    redis_entry_host: "{{ redis_vip if redis_vip_enabled | bool else redis_verify_master.stdout_lines[0] }}"
-
-- name: Read VIP state
-  ansible.builtin.command: ip -o -4 addr show dev {{ redis_vip_interface }}
-  register: redis_verify_vip
-  changed_when: false
-  when: redis_vip_enabled | bool
-
-- name: Confirm VIP is on the Sentinel master only
-  ansible.builtin.assert:
-    that:
-      - ((' ' ~ redis_vip ~ '/') in redis_verify_vip.stdout) == (redis_ip == redis_verify_master.stdout_lines[0])
-    fail_msg: "VIP {{ redis_vip }} placement on {{ inventory_hostname }} does not match Sentinel master {{ redis_verify_master.stdout_lines[0] }}."
-  when: redis_vip_enabled | bool
+    redis_entry_host: "{{ redis_verify_master.stdout_lines[0] }}"
 
 - name: Read master replication info through the entry address
   ansible.builtin.command:
@@ -122,5 +111,5 @@
   ansible.builtin.debug:
     msg: >-
       REDIS_URL=redis://{{ redis_app_user }}:<REDIS_APP_PASSWORD>@{{ redis_entry_host }}:{{ redis_port }}
-      {{ '' if redis_vip_enabled | bool else '(IP master hiện tại; chưa có VIP nên phải đổi tay nếu Sentinel chuyển master)' }}
+      (IP master hiện tại; nếu Sentinel chuyển master thì đổi REDIS_URL sang IP master mới)
   run_once: true

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # {{ ansible_managed }}
-# Cài HAProxy{{ ' + keepalived VIP ' ~ haproxy_vip if haproxy_vip_enabled | bool else '' }} cho {{ inventory_hostname }} ({{ haproxy_ip }}, vai trò {{ role }}).
+# Cài HAProxy cho {{ inventory_hostname }} ({{ haproxy_ip }}).
 # Chạy bằng root trên chính máy này:  sudo bash install.sh   — chạy lại được nhiều lần.
 set -euo pipefail
 umask 027
@@ -23,12 +23,7 @@ log "Kiểm tra máy"
 [ "$(id -u)" -eq 0 ] || die "Phải chạy bằng root (sudo bash install.sh)."
 . /etc/os-release
 [ "${ID}" = ubuntu ] || die "Cần Ubuntu, máy này là ${PRETTY_NAME}."
-{% if haproxy_vip_enabled | bool %}
-ip -o -4 addr show dev '{{ haproxy_vip_interface }}' 2>/dev/null | grep -q " ${MY_IP}/" \
-  || die "Card {{ haproxy_vip_interface }} không mang IP ${MY_IP}: chạy nhầm máy, hoặc HAPROXY_VIP_INTERFACE/HAPROXY_*_IP sai."
-{% else %}
 ip -o -4 addr show 2>/dev/null | grep -q " ${MY_IP}/" || die "Máy này không có IP ${MY_IP}: chạy nhầm máy, hoặc HAPROXY_*_IP sai."
-{% endif %}
 
 # --------------------------------------------------------------------------
 log "Cài gói"
@@ -65,19 +60,5 @@ elif [ "${cfg_changed}" = 1 ]; then
   systemctl reload haproxy   # không cắt kết nối đang chạy
 fi
 
-{% if haproxy_vip_enabled | bool %}
-# --------------------------------------------------------------------------
-log "VIP {{ haproxy_vip }} (keepalived)"
-# --------------------------------------------------------------------------
-install -d -m 0755 /etc/keepalived
-keepalived --config-test -f "${F}/keepalived.conf"
-if put_file "${F}/keepalived.conf" /etc/keepalived/keepalived.conf 0600 root:root; then
-  systemctl enable keepalived >/dev/null; systemctl restart keepalived
-else
-  systemctl enable --now keepalived >/dev/null
-fi
-{% else %}
-# Không có HAPROXY_VIP: không cài keepalived; trỏ DNS/tường lửa vào IP của từng máy HAProxy.
-{% endif %}
 
 log "Xong {{ inventory_hostname }}. Kiểm tra: sudo bash verify.sh"

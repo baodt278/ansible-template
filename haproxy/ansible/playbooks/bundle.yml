@@ -42,8 +42,7 @@
       loop: >-
         {{ [{'src': 'haproxy.cfg.j2', 'dest': 'haproxy.cfg'},
             {'src': 'haproxy-sysctl.conf.j2', 'dest': '99-haproxy.conf'},
-            {'src': 'haproxy-override.conf.j2', 'dest': 'override.conf'}]
-           + ([{'src': 'haproxy-keepalived.conf.j2', 'dest': 'keepalived.conf'}] if haproxy_vip_enabled | bool else []) }}
+            {'src': 'haproxy-override.conf.j2', 'dest': 'override.conf'}] }}
       loop_control:
         label: "{{ item.dest }}"
 

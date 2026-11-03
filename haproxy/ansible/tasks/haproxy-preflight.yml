@@ -15,8 +15,8 @@
       - ansible_facts.distribution_major_version | int >= 22
     fail_msg: "Expected Ubuntu 22.04+ (production: 24.04), found {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}."
 
-- name: Validate this host carries haproxy_ip (on the VIP interface when VIP is enabled)
-  ansible.builtin.command: ip -o -4 addr show {{ ('dev ' ~ haproxy_vip_interface) if haproxy_vip_enabled | bool else '' }}
+- name: Validate this host carries haproxy_ip
+  ansible.builtin.command: ip -o -4 addr show
   register: haproxy_iface_addr
   changed_when: false
   failed_when: >-

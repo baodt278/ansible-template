@@ -12,7 +12,6 @@
     state: stopped
     enabled: false
   loop:
-    - keepalived
     - "{{ sentinel_service_name }}"
     - "{{ redis_service_name }}"
   failed_when: false
@@ -24,8 +23,6 @@
   loop:
     - "/etc/systemd/system/{{ redis_service_name }}.service"
     - "/etc/systemd/system/{{ sentinel_service_name }}.service"
-    - /etc/keepalived/keepalived.conf
-    - /usr/local/sbin/redis-vip-check.sh
     - /usr/local/sbin/redis-backup.sh
     - /etc/cron.d/vtvl-redis-backup
     - /etc/logrotate.d/vtvl-redis

@@ -12,7 +12,6 @@
     state: stopped
     enabled: false
   loop:
-    - keepalived
     - haproxy
   failed_when: false
 
@@ -21,7 +20,6 @@
     path: "{{ item }}"
     state: absent
   loop:
-    - /etc/keepalived/keepalived.conf
     - /etc/systemd/system/haproxy.service.d/override.conf
     - /etc/sysctl.d/99-haproxy.conf
     - "{{ cert_file }}"
@@ -30,7 +28,6 @@
   ansible.builtin.apt:
     name:
       - haproxy
-      - keepalived
     state: absent
     purge: true
 
