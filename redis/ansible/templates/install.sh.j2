@@ -56,8 +56,15 @@ apt-get install -y -q --no-install-recommends --allow-downgrades \
   -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
   {{ redis_install_packages | join(' ') }}
 # Gói tự bật redis-server.service; dùng unit riêng nên tắt và khóa unit của gói.
-systemctl disable --now redis-server.service redis-sentinel.service >/dev/null 2>&1 || true
-systemctl mask redis-server.service redis-sentinel.service >/dev/null 2>&1 || true
+# Từng dịch vụ một: gộp chung thì dịch vụ không tồn tại (redis-sentinel) làm hỏng cả lệnh, redis-server vẫn chạy và chiếm 6379.
+for u in redis-server.service redis-sentinel.service; do
+  systemctl stop "$u" >/dev/null 2>&1 || true
+  systemctl disable "$u" >/dev/null 2>&1 || true
+  systemctl mask "$u" >/dev/null 2>&1 || true
+done
+if ss -ltnp 2>/dev/null | grep -q ':{{ redis_port }} .*redis-server' && ! systemctl is-active --quiet "${REDIS_SVC}"; then
+  die "Cổng {{ redis_port }} vẫn bị một redis-server khác chiếm: $(ss -ltnp | grep ':{{ redis_port }} ' | head -1)"
+fi
 redis-server --version | grep -q 'v={{ redis_version_series }}\.' \
   || die "Redis không phải {{ redis_version_series }}.x: $(redis-server --version)"
 
