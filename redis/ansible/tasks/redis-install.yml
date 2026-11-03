@@ -50,16 +50,52 @@
     DEBIAN_FRONTEND: noninteractive
 
 # Gói tự bật redis-server.service trên 127.0.0.1:6379; dịch vụ của ta dùng unit riêng.
-- name: Stop and mask packaged Redis units
+- name: Stop and mask packaged redis-server unit
+  ansible.builtin.systemd:
+    name: redis-server.service
+    state: stopped
+    enabled: false
+    masked: true
+  failed_when: false
+
+# redis-sentinel là tên dịch vụ của ta: gỡ khóa nếu bản trước đã khóa.
+- name: Unmask redis-sentinel (bản trước khóa nhầm tên này)
+  ansible.builtin.systemd:
+    name: "{{ sentinel_service_name }}.service"
+    masked: false
+  failed_when: false
+
+# Bí danh redis.service → redis-server.service của gói (gói tạo khi bật): gỡ để tên redis.service là của ta.
+- name: Check packaged redis.service alias
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/{{ redis_service_name }}.service"
+  register: redis_alias_stat
+
+- name: Remove packaged redis.service alias
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ redis_service_name }}.service"
+    state: absent
+  when: redis_alias_stat.stat.islnk | default(false)
+
+- name: Stop and disable services with legacy names
   ansible.builtin.systemd:
     name: "{{ item }}"
     state: stopped
     enabled: false
-    masked: true
-  loop:
-    - redis-server.service
-    - redis-sentinel.service
+  loop: "{{ redis_legacy_services }}"
   failed_when: false
+
+- name: Remove legacy unit and config files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ (redis_legacy_services | map('regex_replace', '^', '/etc/systemd/system/') | map('regex_replace', '$', '.service') | list) + redis_legacy_files }}"
+  register: redis_legacy_removed
+
+- name: Reload systemd after removing legacy units  # noqa: no-handler
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: redis_legacy_removed.changed
 
 - name: Read installed Redis version
   ansible.builtin.command: redis-server --version

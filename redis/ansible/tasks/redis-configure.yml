@@ -4,7 +4,7 @@
 - name: Render managed Redis configuration
   ansible.builtin.template:
     src: "{{ templates_dir }}/redis.conf.j2"
-    dest: "{{ config_dir }}/{{ redis_service_name }}.conf.managed"
+    dest: "{{ config_dir }}/{{ redis_config_name }}.conf.managed"
     owner: root
     group: root
     mode: "0600"
@@ -21,8 +21,8 @@
 
 - name: Install live Redis configuration
   ansible.builtin.copy:
-    src: "{{ config_dir }}/{{ redis_service_name }}.conf.managed"
-    dest: "{{ config_dir }}/{{ redis_service_name }}.conf"
+    src: "{{ config_dir }}/{{ redis_config_name }}.conf.managed"
+    dest: "{{ config_dir }}/{{ redis_config_name }}.conf"
     remote_src: true
     owner: "{{ service_user }}"
     group: "{{ service_group }}"

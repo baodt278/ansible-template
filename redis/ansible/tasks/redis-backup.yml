@@ -14,7 +14,7 @@
 - name: Install backup schedule
   ansible.builtin.template:
     src: "{{ templates_dir }}/redis-cron.j2"
-    dest: /etc/cron.d/vtvl-redis-backup
+    dest: /etc/cron.d/redis-backup
     owner: root
     group: root
     mode: "0644"

@@ -17,6 +17,7 @@ MY_IP='{{ redis_ip }}'
 MASTER_IP='{{ redis_current_master_ip }}'
 CONF_DIR='{{ config_dir }}'
 REDIS_SVC='{{ redis_service_name }}'
+CONF_NAME='{{ redis_config_name }}'
 SENTINEL_SVC='{{ sentinel_service_name }}'
 SENTINEL_CONF='{{ sentinel_dir }}/sentinel.conf'
 
@@ -55,13 +56,23 @@ apt-get update -q
 apt-get install -y -q --no-install-recommends --allow-downgrades \
   -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
   {{ redis_install_packages | join(' ') }}
-# Gói tự bật redis-server.service; dùng unit riêng nên tắt và khóa unit của gói.
-# Từng dịch vụ một: gộp chung thì dịch vụ không tồn tại (redis-sentinel) làm hỏng cả lệnh, redis-server vẫn chạy và chiếm 6379.
-for u in redis-server.service redis-sentinel.service; do
-  systemctl stop "$u" >/dev/null 2>&1 || true
-  systemctl disable "$u" >/dev/null 2>&1 || true
-  systemctl mask "$u" >/dev/null 2>&1 || true
+# Gói tự bật redis-server.service (bí danh redis.service): tắt, khóa unit của gói; tên redis, redis-sentinel là của ta.
+systemctl stop redis-server.service >/dev/null 2>&1 || true
+systemctl disable redis-server.service >/dev/null 2>&1 || true
+systemctl mask redis-server.service >/dev/null 2>&1 || true
+systemctl unmask "${SENTINEL_SVC}.service" >/dev/null 2>&1 || true   # bản trước khóa nhầm tên này
+[ -L "/etc/systemd/system/${REDIS_SVC}.service" ] && rm -f "/etc/systemd/system/${REDIS_SVC}.service"   # bí danh của gói
+# Tên cũ (bản trước 03/11): dừng, gỡ để không có hai Redis giành cổng.
+for old in {{ redis_legacy_services | join(' ') }}; do
+  if [ -f "/etc/systemd/system/${old}.service" ]; then
+    log "Gỡ dịch vụ tên cũ ${old}"
+    systemctl stop "${old}" >/dev/null 2>&1 || true
+    systemctl disable "${old}" >/dev/null 2>&1 || true
+    rm -f "/etc/systemd/system/${old}.service"
+  fi
 done
+rm -f {{ redis_legacy_files | join(' ') }}
+systemctl daemon-reload
 if ss -ltnp 2>/dev/null | grep -q ':{{ redis_port }} .*redis-server' && ! systemctl is-active --quiet "${REDIS_SVC}"; then
   die "Cổng {{ redis_port }} vẫn bị một redis-server khác chiếm: $(ss -ltnp | grep ':{{ redis_port }} ' | head -1)"
 fi
@@ -78,7 +89,7 @@ install -d -o root -g root -m 0750 '{{ backup_dir }}'
 install -m 0644 -o root -g root "${F}/99-redis.conf" /etc/sysctl.d/99-redis.conf
 sysctl --system >/dev/null
 install -m 0644 -o root -g root "${F}/disable-thp.service" /etc/systemd/system/disable-thp.service
-install -m 0644 -o root -g root "${F}/vtvl-redis.logrotate" /etc/logrotate.d/vtvl-redis
+install -m 0644 -o root -g root "${F}/redis-node.logrotate" /etc/logrotate.d/redis-node
 systemctl daemon-reload
 systemctl enable --now disable-thp.service >/dev/null
 
@@ -98,7 +109,7 @@ put_file() {  # $1 nguồn, $2 đích, $3 quyền, $4 chủ; trả 0 nếu có t
   install -m "$3" -o "${4%%:*}" -g "${4##*:}" "$1" "$2"
 }
 conf_changed=0; acl_changed=0; unit_changed=0
-put_managed "${F}/${REDIS_SVC}.conf" "${CONF_DIR}/${REDIS_SVC}.conf" && conf_changed=1 || true
+put_managed "${F}/${CONF_NAME}.conf" "${CONF_DIR}/${CONF_NAME}.conf" && conf_changed=1 || true
 put_managed "${F}/users.acl" "${CONF_DIR}/users.acl" && acl_changed=1 || true
 put_file "${F}/${REDIS_SVC}.service" "/etc/systemd/system/${REDIS_SVC}.service" 0644 root:root && unit_changed=1 || true
 [ "${unit_changed}" = 1 ] && systemctl daemon-reload
@@ -140,7 +151,7 @@ log "Sao lưu hằng ngày"
 # --------------------------------------------------------------------------
 install -m 0700 -o root -g root "${F}/redis-backup.sh" /usr/local/sbin/redis-backup.sh
 bash -n /usr/local/sbin/redis-backup.sh
-install -m 0644 -o root -g root "${F}/vtvl-redis-backup.cron" /etc/cron.d/vtvl-redis-backup
+install -m 0644 -o root -g root "${F}/redis-backup.cron" /etc/cron.d/redis-backup
 
 # --------------------------------------------------------------------------
 log "Kết quả trên {{ inventory_hostname }}"

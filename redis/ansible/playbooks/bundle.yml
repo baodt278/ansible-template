@@ -49,14 +49,14 @@
         dest: "{{ bundle_dir }}/files/{{ item.dest }}"
         mode: "0600"
       loop:
-        - { src: redis.conf.j2, dest: "{{ redis_service_name }}.conf" }
+        - { src: redis.conf.j2, dest: "{{ redis_config_name }}.conf" }
         - { src: redis-users.acl.j2, dest: users.acl }
         - { src: redis-sentinel.conf.j2, dest: sentinel.conf }
         - { src: redis.service.j2, dest: "{{ redis_service_name }}.service" }
         - { src: redis-sentinel.service.j2, dest: "{{ sentinel_service_name }}.service" }
         - { src: redis-backup.sh.j2, dest: redis-backup.sh }
-        - { src: redis-cron.j2, dest: vtvl-redis-backup.cron }
-        - { src: redis-logrotate.j2, dest: vtvl-redis.logrotate }
+        - { src: redis-cron.j2, dest: redis-backup.cron }
+        - { src: redis-logrotate.j2, dest: redis-node.logrotate }
         - { src: redis-sysctl.conf.j2, dest: 99-redis.conf }
         - { src: redis-disable-thp.service.j2, dest: disable-thp.service }
       loop_control:

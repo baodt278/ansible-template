@@ -250,10 +250,10 @@ haproxy/ansible/
 
 | Việc | Lệnh (trên máy Redis) |
 |---|---|
-| Master hiện tại | `REDISCLI_AUTH=… redis-cli -p 26379 SENTINEL get-master-addr-by-name vtvl-redis` |
-| Chuyển master có chủ đích | `REDISCLI_AUTH=… redis-cli -p 26379 SENTINEL failover vtvl-redis` |
+| Master hiện tại | `REDISCLI_AUTH=… redis-cli -p 26379 SENTINEL get-master-addr-by-name redis` |
+| Chuyển master có chủ đích | `REDISCLI_AUTH=… redis-cli -p 26379 SENTINEL failover redis` |
 | Trạng thái nhân bản | `REDISCLI_AUTH=… redis-cli INFO replication` |
 | Sao lưu tay | `sudo /usr/local/sbin/redis-backup.sh` (tự chạy 02:20 hằng ngày, giữ 7 ngày ở `/data/redis-backup`) |
 | Nhật ký | `/logs/redis/redis.log`, `/logs/redis/sentinel.log` |
 
-Dịch vụ systemd: `vtvl-redis`, `vtvl-redis-sentinel`. Unit `redis-server` của gói bị mask.
+Dịch vụ systemd: `redis`, `redis-sentinel` (`systemctl status redis redis-sentinel`); cấu hình `/etc/redis/redis-node.conf`, Sentinel `/data/redis-sentinel/sentinel.conf`. Unit `redis-server` của gói bị khóa (mask), tệp `/etc/redis/redis.conf` của gói không dùng.

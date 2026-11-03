@@ -7,7 +7,7 @@ Wants=network-online.target
 
 [Service]
 Type=notify
-ExecStart=/usr/bin/redis-server {{ config_dir }}/{{ redis_service_name }}.conf --supervised systemd --daemonize no
+ExecStart=/usr/bin/redis-server {{ config_dir }}/{{ redis_config_name }}.conf --supervised systemd --daemonize no
 TimeoutStartSec=120
 TimeoutStopSec=180
 Restart=always

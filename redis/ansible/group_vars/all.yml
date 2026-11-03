@@ -35,8 +35,18 @@ log_dir: /logs/redis
 backup_dir: /data/redis-backup
 run_dir: /run/redis
 
-redis_service_name: vtvl-redis
-sentinel_service_name: vtvl-redis-sentinel
+# Tên dịch vụ systemd: redis, redis-sentinel. Unit redis-server.service của gói bị khóa (mask); bí danh
+# redis.service của nó được gỡ. Tệp cấu hình KHÔNG đặt /etc/redis/redis.conf (tệp của gói) mà redis-node.conf.
+redis_service_name: redis
+sentinel_service_name: redis-sentinel
+redis_config_name: redis-node
+# Tên cũ (bản trước 03/11): install/setup tự dừng, gỡ để không có hai Redis giành cổng.
+redis_legacy_services: [vtvl-redis, vtvl-redis-sentinel]
+redis_legacy_files:
+  - /etc/cron.d/vtvl-redis-backup
+  - /etc/logrotate.d/vtvl-redis
+  - /etc/redis/vtvl-redis.conf
+  - /etc/redis/vtvl-redis.conf.managed
 
 # -----------------------------------------------------------------------------
 # Mạng
@@ -49,7 +59,7 @@ redis_install_packages: "{{ redis_packages + os_packages }}"
 # -----------------------------------------------------------------------------
 # Sentinel
 # -----------------------------------------------------------------------------
-sentinel_master_name: vtvl-redis
+sentinel_master_name: redis
 sentinel_quorum: 2
 sentinel_down_after_ms: 5000
 sentinel_failover_timeout_ms: 60000
