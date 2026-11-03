@@ -1,0 +1,93 @@
+---
+# Không SSH: sinh trên máy điều khiển, cho mỗi máy Redis một thư mục bundle/redis/<máy>/ gồm tệp cấu hình
+# và install.sh, verify.sh. Chép thư mục lên đúng máy (Teleport: tsh scp / tải tệp lên) rồi chạy bằng root.
+# Dành cho cài lần đầu: master = máy redis_initial_role: master. Cụm đã chạy và master đã đổi thì thêm
+# -e redis_current_master_ip=<IP master hiện tại>.
+- name: Build Redis install bundles
+  hosts: redis
+  connection: local
+  gather_facts: false
+  become: false
+  vars_files:
+    - ../group_vars/all.yml
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+    bundle_root: "{{ playbook_dir | dirname | dirname | dirname }}/bundle/redis"
+    bundle_dir: "{{ bundle_root }}/{{ inventory_hostname }}"
+    redis_initial_master_ip: >-
+      {{ groups[cluster_group] | map('extract', hostvars)
+         | selectattr('redis_initial_role', 'equalto', 'master') | map(attribute='redis_ip') | first }}
+    redis_initial_master_host: >-
+      {{ groups[cluster_group] | map('extract', hostvars)
+         | selectattr('redis_initial_role', 'equalto', 'master') | map(attribute='inventory_hostname') | first }}
+  tasks:
+    - name: Validate variables
+      ansible.builtin.import_tasks: ../tasks/redis-validate.yml
+
+    - name: Use initial master unless given
+      ansible.builtin.set_fact:
+        redis_current_master_ip: "{{ redis_current_master_ip | default(redis_initial_master_ip) }}"
+
+    - name: Remove previous bundle of this host
+      ansible.builtin.file:
+        path: "{{ bundle_dir }}"
+        state: absent
+
+    - name: Create bundle directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0700"
+      loop:
+        - "{{ bundle_root }}"
+        - "{{ bundle_dir }}"
+        - "{{ bundle_dir }}/files"
+
+    - name: Render configuration files
+      ansible.builtin.template:
+        src: "{{ templates_dir }}/{{ item.src }}"
+        dest: "{{ bundle_dir }}/files/{{ item.dest }}"
+        mode: "0600"
+      loop:
+        - { src: redis.conf.j2, dest: "{{ redis_service_name }}.conf" }
+        - { src: redis-users.acl.j2, dest: users.acl }
+        - { src: redis-sentinel.conf.j2, dest: sentinel.conf }
+        - { src: redis.service.j2, dest: "{{ redis_service_name }}.service" }
+        - { src: redis-sentinel.service.j2, dest: "{{ sentinel_service_name }}.service" }
+        - { src: redis-backup.sh.j2, dest: redis-backup.sh }
+        - { src: redis-cron.j2, dest: vtvl-redis-backup.cron }
+        - { src: redis-logrotate.j2, dest: vtvl-redis.logrotate }
+        - { src: redis-sysctl.conf.j2, dest: 99-redis.conf }
+        - { src: redis-disable-thp.service.j2, dest: disable-thp.service }
+      loop_control:
+        label: "{{ item.dest }}"
+
+    - name: Render VIP files
+      ansible.builtin.template:
+        src: "{{ templates_dir }}/{{ item.src }}"
+        dest: "{{ bundle_dir }}/files/{{ item.dest }}"
+        mode: "0600"
+      loop:
+        - { src: redis-vip-check.sh.j2, dest: redis-vip-check.sh }
+        - { src: redis-keepalived.conf.j2, dest: keepalived.conf }
+      loop_control:
+        label: "{{ item.dest }}"
+      when: redis_vip_enabled | bool
+
+    - name: Render install and verify scripts
+      ansible.builtin.template:
+        src: "{{ templates_dir }}/{{ item }}.j2"
+        dest: "{{ bundle_dir }}/{{ item }}"
+        mode: "0700"
+      loop:
+        - install.sh
+        - verify.sh
+
+    - name: Show next steps  # noqa: run-once[task]
+      ansible.builtin.debug:
+        msg:
+          - "Bundles: {{ bundle_root }}/<host>/ (contain passwords: copy privately, delete after install)"
+          - "1. {{ redis_initial_master_host }} ({{ redis_current_master_ip }}): sudo bash install.sh"
+          - "2. the two other nodes: sudo bash install.sh"
+          - "3. any node, after all three: sudo bash verify.sh"
+      run_once: true

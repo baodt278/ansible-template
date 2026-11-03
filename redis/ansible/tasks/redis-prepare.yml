@@ -29,14 +29,9 @@
     - { path: "{{ backup_dir }}", owner: root, mode: "0750" }
 
 - name: Persist kernel settings
-  ansible.builtin.copy:
+  ansible.builtin.template:
+    src: "{{ templates_dir }}/redis-sysctl.conf.j2"
     dest: /etc/sysctl.d/99-redis.conf
-    content: |
-      # Redis: fork cho BGSAVE/AOF rewrite không thất bại khi thiếu bộ nhớ ảo
-      vm.overcommit_memory = 1
-      net.core.somaxconn = 65535
-      # Cho Redis bind sẵn VIP khi VIP đang ở máy khác
-      net.ipv4.ip_nonlocal_bind = 1
     owner: root
     group: root
     mode: "0644"
@@ -48,21 +43,9 @@
   changed_when: true
 
 - name: Install unit disabling transparent huge pages
-  ansible.builtin.copy:
+  ansible.builtin.template:
+    src: "{{ templates_dir }}/redis-disable-thp.service.j2"
     dest: /etc/systemd/system/disable-thp.service
-    content: |
-      [Unit]
-      Description=Disable Transparent Huge Pages (Redis latency)
-      DefaultDependencies=no
-      After=sysinit.target local-fs.target
-      Before={{ redis_service_name }}.service
-
-      [Service]
-      Type=oneshot
-      ExecStart=/bin/sh -c 'echo never > /sys/kernel/mm/transparent_hugepage/enabled && echo never > /sys/kernel/mm/transparent_hugepage/defrag'
-
-      [Install]
-      WantedBy=basic.target
     owner: root
     group: root
     mode: "0644"

@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Cài Redis {{ redis_version_series }} + Sentinel{{ ' + VIP' if redis_vip_enabled | bool else '' }} cho {{ inventory_hostname }} ({{ redis_ip }}),
+# vai trò lúc cài: {{ 'MASTER' if redis_ip == redis_current_master_ip else 'REPLICA của ' ~ redis_current_master_ip }}.
+# Chạy bằng root trên chính máy này:  sudo bash install.sh
+# Thứ tự: máy master trước, rồi hai replica; xong cả ba thì chạy verify.sh. Chạy lại được nhiều lần.
+#   FORCE_SENTINEL=1 sudo bash install.sh   # ghi đè sentinel.conf (mặc định chỉ ghi lần đầu)
+set -euo pipefail
+umask 027
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+F="${HERE}/files"
+log()  { printf '\n==> %s\n' "$*"; }
+die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'WARNING: %s\n' "$*" >&2; }
+
+MY_IP='{{ redis_ip }}'
+MASTER_IP='{{ redis_current_master_ip }}'
+{% if redis_vip_enabled | bool %}
+IFACE='{{ redis_vip_interface }}'
+{% endif %}
+CONF_DIR='{{ config_dir }}'
+REDIS_SVC='{{ redis_service_name }}'
+SENTINEL_SVC='{{ sentinel_service_name }}'
+SENTINEL_CONF='{{ sentinel_dir }}/sentinel.conf'
+
+# --------------------------------------------------------------------------
+log "Kiểm tra máy"
+# --------------------------------------------------------------------------
+[ "$(id -u)" -eq 0 ] || die "Phải chạy bằng root (sudo bash install.sh)."
+. /etc/os-release
+[ "${ID}" = ubuntu ] || die "Cần Ubuntu, máy này là ${PRETTY_NAME}."
+{% if redis_vip_enabled | bool %}
+ip -o -4 addr show dev "${IFACE}" 2>/dev/null | grep -q " ${MY_IP}/" \
+  || die "Card ${IFACE} không mang IP ${MY_IP}: chạy nhầm máy, hoặc REDIS_VIP_INTERFACE/REDIS_*_IP trong .env sai."
+{% else %}
+ip -o -4 addr show 2>/dev/null | grep -q " ${MY_IP}/" \
+  || die "Máy này không có IP ${MY_IP}: chạy nhầm máy, hoặc REDIS_*_IP trong .env sai."
+{% endif %}
+for d in '{{ data_dir | dirname }}' '{{ log_dir | dirname }}' '{{ backup_dir | dirname }}'; do
+  [ -d "$d" ] || die "Thiếu thư mục $d (gắn đĩa trước)."
+done
+mem_bytes=$(( $(awk '/^MemTotal:/{print $2}' /proc/meminfo) * 1024 ))
+[ "{{ redis_maxmemory | upper | human_to_bytes | int }}" -le $(( mem_bytes * 3 / 4 )) ] \
+  || die "maxmemory {{ redis_maxmemory }} quá lớn so với RAM máy (cần chừa chỗ cho fork)."
+
+# --------------------------------------------------------------------------
+log "Cài gói (kho packages.redis.io, ghim {{ redis_version_series }}.x)"
+# --------------------------------------------------------------------------
+export DEBIAN_FRONTEND=noninteractive
+command -v curl >/dev/null || { apt-get update -q; apt-get install -y -q curl ca-certificates; }
+install -d -m 0755 '{{ redis_apt_keyring | dirname }}'
+curl -fsSL '{{ redis_apt_key_url }}' -o '{{ redis_apt_keyring }}'
+chmod 0644 '{{ redis_apt_keyring }}'
+echo "deb [signed-by={{ redis_apt_keyring }}] {{ redis_apt_repo_url }} ${VERSION_CODENAME} main" > /etc/apt/sources.list.d/redis.list
+cat > /etc/apt/preferences.d/redis <<'PIN'
+Package: redis redis-server redis-tools redis-sentinel
+Pin: version *{{ redis_version_series }}.*
+Pin-Priority: 1001
+PIN
+chmod 0644 /etc/apt/sources.list.d/redis.list /etc/apt/preferences.d/redis
+apt-get update -q
+apt-get install -y -q --no-install-recommends {{ redis_install_packages | join(' ') }}
+# Gói tự bật redis-server.service; dùng unit riêng nên tắt và khóa unit của gói.
+systemctl disable --now redis-server.service redis-sentinel.service >/dev/null 2>&1 || true
+systemctl mask redis-server.service redis-sentinel.service >/dev/null 2>&1 || true
+redis-server --version | grep -q 'v={{ redis_version_series }}\.' \
+  || die "Redis không phải {{ redis_version_series }}.x: $(redis-server --version)"
+
+# --------------------------------------------------------------------------
+log "Người dùng, thư mục, tham số nhân"
+# --------------------------------------------------------------------------
+getent group '{{ service_group }}' >/dev/null || groupadd --system '{{ service_group }}'
+id '{{ service_user }}' >/dev/null 2>&1 || useradd --system -g '{{ service_group }}' -s /usr/sbin/nologin -d /var/lib/redis -M '{{ service_user }}'
+install -d -o '{{ service_user }}' -g '{{ service_group }}' -m 0750 "${CONF_DIR}" '{{ data_dir }}' '{{ sentinel_dir }}' '{{ log_dir }}'
+install -d -o root -g root -m 0750 '{{ backup_dir }}'
+install -m 0644 -o root -g root "${F}/99-redis.conf" /etc/sysctl.d/99-redis.conf
+sysctl --system >/dev/null
+install -m 0644 -o root -g root "${F}/disable-thp.service" /etc/systemd/system/disable-thp.service
+install -m 0644 -o root -g root "${F}/vtvl-redis.logrotate" /etc/logrotate.d/vtvl-redis
+systemctl daemon-reload
+systemctl enable --now disable-thp.service >/dev/null
+
+# --------------------------------------------------------------------------
+log "Cấu hình Redis"
+# --------------------------------------------------------------------------
+# Bản tham chiếu *.managed (chỉ root đọc). Tệp đang chạy chỉ bị chép đè khi bản tham chiếu đổi,
+# vì Sentinel ghi thêm vào tệp đang chạy (CONFIG REWRITE) khi chuyển master.
+put_managed() {  # $1 nguồn, $2 tệp đang chạy; trả 0 nếu có thay đổi
+  local src="$1" live="$2" managed="$2.managed"
+  if [ -f "${managed}" ] && cmp -s "${src}" "${managed}" && [ -f "${live}" ]; then return 1; fi
+  install -m 0600 -o root -g root "${src}" "${managed}"
+  install -m 0640 -o '{{ service_user }}' -g '{{ service_group }}' "${src}" "${live}"
+}
+put_file() {  # $1 nguồn, $2 đích, $3 quyền, $4 chủ; trả 0 nếu có thay đổi
+  if [ -f "$2" ] && cmp -s "$1" "$2"; then return 1; fi
+  install -m "$3" -o "${4%%:*}" -g "${4##*:}" "$1" "$2"
+}
+conf_changed=0; acl_changed=0; unit_changed=0
+put_managed "${F}/${REDIS_SVC}.conf" "${CONF_DIR}/${REDIS_SVC}.conf" && conf_changed=1 || true
+put_managed "${F}/users.acl" "${CONF_DIR}/users.acl" && acl_changed=1 || true
+put_file "${F}/${REDIS_SVC}.service" "/etc/systemd/system/${REDIS_SVC}.service" 0644 root:root && unit_changed=1 || true
+[ "${unit_changed}" = 1 ] && systemctl daemon-reload
+systemctl enable "${REDIS_SVC}" >/dev/null
+
+rcli() { REDISCLI_AUTH='{{ redis_admin_password }}' redis-cli -h 127.0.0.1 -p '{{ redis_port }}' --no-auth-warning "$@"; }
+if ! systemctl is-active --quiet "${REDIS_SVC}"; then
+  systemctl start "${REDIS_SVC}"
+elif [ "${conf_changed}" = 1 ] || [ "${unit_changed}" = 1 ]; then
+  systemctl restart "${REDIS_SVC}"
+elif [ "${acl_changed}" = 1 ]; then
+  [ "$(rcli ACL LOAD 2>/dev/null)" = OK ] || systemctl restart "${REDIS_SVC}"
+fi
+
+for _ in $(seq 1 30); do [ "$(rcli PING 2>/dev/null)" = PONG ] && break; sleep 2; done
+[ "$(rcli PING 2>/dev/null)" = PONG ] || die "Redis không trả lời PING. Xem {{ log_dir }}/redis.log"
+
+if [ "${MY_IP}" != "${MASTER_IP}" ]; then
+  log "Chờ đồng bộ với master ${MASTER_IP}"
+  for _ in $(seq 1 60); do rcli INFO replication | grep -q '^master_link_status:up' && break; sleep 2; done
+  rcli INFO replication | grep -q '^master_link_status:up' \
+    || die "Replica chưa nối được master ${MASTER_IP}:{{ redis_port }}. Master đã cài chưa? Cổng {{ redis_port }} giữa các máy đã mở chưa?"
+fi
+
+# --------------------------------------------------------------------------
+log "Sentinel"
+# --------------------------------------------------------------------------
+sentinel_changed=0
+if [ ! -f "${SENTINEL_CONF}" ] || [ "${FORCE_SENTINEL:-0}" = 1 ]; then
+  install -m 0640 -o '{{ service_user }}' -g '{{ service_group }}' "${F}/sentinel.conf" "${SENTINEL_CONF}"
+  sentinel_changed=1
+fi
+put_file "${F}/${SENTINEL_SVC}.service" "/etc/systemd/system/${SENTINEL_SVC}.service" 0644 root:root && { sentinel_changed=1; systemctl daemon-reload; } || true
+systemctl enable "${SENTINEL_SVC}" >/dev/null
+if [ "${sentinel_changed}" = 1 ]; then systemctl restart "${SENTINEL_SVC}"; else systemctl start "${SENTINEL_SVC}"; fi
+
+{% if redis_vip_enabled | bool %}
+# --------------------------------------------------------------------------
+log "VIP {{ redis_vip }} (keepalived đi theo master)"
+# --------------------------------------------------------------------------
+install -m 0700 -o root -g root "${F}/redis-vip-check.sh" /usr/local/sbin/redis-vip-check.sh
+bash -n /usr/local/sbin/redis-vip-check.sh
+install -d -m 0755 /etc/keepalived
+keepalived --config-test -f "${F}/keepalived.conf" >/dev/null 2>&1 || keepalived --config-test -f "${F}/keepalived.conf"
+if put_file "${F}/keepalived.conf" /etc/keepalived/keepalived.conf 0600 root:root; then
+  systemctl enable keepalived >/dev/null; systemctl restart keepalived
+else
+  systemctl enable --now keepalived >/dev/null
+fi
+
+{% else %}
+# Không có REDIS_VIP: không cài keepalived. Ứng dụng trỏ thẳng IP master (hoặc danh sách Sentinel).
+{% endif %}
+# --------------------------------------------------------------------------
+log "Sao lưu hằng ngày"
+# --------------------------------------------------------------------------
+install -m 0700 -o root -g root "${F}/redis-backup.sh" /usr/local/sbin/redis-backup.sh
+bash -n /usr/local/sbin/redis-backup.sh
+install -m 0644 -o root -g root "${F}/vtvl-redis-backup.cron" /etc/cron.d/vtvl-redis-backup
+
+# --------------------------------------------------------------------------
+log "Kết quả trên {{ inventory_hostname }}"
+# --------------------------------------------------------------------------
+for s in "${REDIS_SVC}" "${SENTINEL_SVC}"{{ ' keepalived' if redis_vip_enabled | bool else '' }}; do
+  printf '  %-24s %s\n' "$s" "$(systemctl is-active "$s")"
+done
+echo "  $(redis-server --version | awk '{print $1, $2, $3}')"
+rcli INFO replication | grep -E '^(role|connected_slaves|master_host|master_link_status):' | sed 's/^/  /' | tr -d '\r'
+REDISCLI_AUTH='{{ redis_sentinel_password }}' redis-cli -h 127.0.0.1 -p '{{ sentinel_port }}' --no-auth-warning \
+  SENTINEL ckquorum '{{ sentinel_master_name }}' 2>&1 | sed 's/^/  Sentinel: /' \
+  || true
+echo
+echo "Xong {{ inventory_hostname }}. Sentinel báo đủ 3 khi cả ba máy đã cài. Cài xong cả ba: sudo bash verify.sh"

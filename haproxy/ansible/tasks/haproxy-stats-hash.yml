@@ -1,0 +1,16 @@
+---
+# SHA-512 crypt bằng openssl trên máy điều khiển; muối cố định theo user + máy để chạy lại không đổi tệp cấu hình.
+- name: Hash stats password
+  ansible.builtin.command:
+    argv: [openssl, passwd, -6, -salt, "{{ (haproxy_stats_user ~ inventory_hostname) | hash('sha256') | truncate(16, true, '') }}", -stdin]
+    stdin: "{{ haproxy_stats_password }}"
+  delegate_to: localhost
+  become: false
+  register: haproxy_stats_hash_out
+  changed_when: false
+  no_log: true
+
+- name: Remember stats password hash
+  ansible.builtin.set_fact:
+    haproxy_stats_password_hash: "{{ haproxy_stats_hash_out.stdout }}"
+  no_log: true

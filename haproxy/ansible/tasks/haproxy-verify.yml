@@ -7,9 +7,7 @@
     that:
       - ansible_facts.services[item ~ '.service'].state | default('') == 'running'
     fail_msg: "{{ item }} is not running on {{ inventory_hostname }}."
-  loop:
-    - haproxy
-    - keepalived
+  loop: "{{ ['haproxy'] + (['keepalived'] if haproxy_vip_enabled | bool else []) }}"
 
 - name: Validate running configuration
   ansible.builtin.command: haproxy -c -f {{ config_dir }}/haproxy.cfg
@@ -62,6 +60,7 @@
   ansible.builtin.command: ip -o -4 addr show dev {{ haproxy_vip_interface }}
   register: haproxy_verify_vip
   changed_when: false
+  when: haproxy_vip_enabled | bool
 
 - name: Confirm VIP is held by exactly one node
   ansible.builtin.assert:
@@ -69,3 +68,4 @@
       - groups['haproxy'] | map('extract', hostvars, ['haproxy_verify_vip', 'stdout']) | select('search', ' ' ~ haproxy_vip ~ '/') | list | length == 1
     fail_msg: "VIP {{ haproxy_vip }} must be on exactly one HAProxy node."
   run_once: true
+  when: haproxy_vip_enabled | bool

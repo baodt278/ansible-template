@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Cài HAProxy{{ ' + keepalived VIP ' ~ haproxy_vip if haproxy_vip_enabled | bool else '' }} cho {{ inventory_hostname }} ({{ haproxy_ip }}, vai trò {{ role }}).
+# Chạy bằng root trên chính máy này:  sudo bash install.sh   — chạy lại được nhiều lần.
+set -euo pipefail
+umask 027
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+F="${HERE}/files"
+log() { printf '\n==> %s\n' "$*"; }
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+MY_IP='{{ haproxy_ip }}'
+CFG='{{ config_dir }}/haproxy.cfg'
+
+put_file() {  # $1 nguồn, $2 đích, $3 quyền, $4 chủ:nhóm; trả 0 nếu có thay đổi
+  if [ -f "$2" ] && cmp -s "$1" "$2"; then return 1; fi
+  install -m "$3" -o "${4%%:*}" -g "${4##*:}" "$1" "$2"
+}
+
+# --------------------------------------------------------------------------
+log "Kiểm tra máy"
+# --------------------------------------------------------------------------
+[ "$(id -u)" -eq 0 ] || die "Phải chạy bằng root (sudo bash install.sh)."
+. /etc/os-release
+[ "${ID}" = ubuntu ] || die "Cần Ubuntu, máy này là ${PRETTY_NAME}."
+{% if haproxy_vip_enabled | bool %}
+ip -o -4 addr show dev '{{ haproxy_vip_interface }}' 2>/dev/null | grep -q " ${MY_IP}/" \
+  || die "Card {{ haproxy_vip_interface }} không mang IP ${MY_IP}: chạy nhầm máy, hoặc HAPROXY_VIP_INTERFACE/HAPROXY_*_IP sai."
+{% else %}
+ip -o -4 addr show 2>/dev/null | grep -q " ${MY_IP}/" || die "Máy này không có IP ${MY_IP}: chạy nhầm máy, hoặc HAPROXY_*_IP sai."
+{% endif %}
+
+# --------------------------------------------------------------------------
+log "Cài gói"
+# --------------------------------------------------------------------------
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -q
+apt-get install -y -q --no-install-recommends {{ haproxy_install_packages | join(' ') }}
+haproxy -v | head -n1
+
+# --------------------------------------------------------------------------
+log "Tham số nhân, systemd"
+# --------------------------------------------------------------------------
+install -m 0644 -o root -g root "${F}/99-haproxy.conf" /etc/sysctl.d/99-haproxy.conf
+sysctl --system >/dev/null
+install -d -m 0755 /etc/systemd/system/haproxy.service.d
+override_changed=0
+put_file "${F}/override.conf" /etc/systemd/system/haproxy.service.d/override.conf 0644 root:root && override_changed=1 || true
+systemctl daemon-reload
+
+# --------------------------------------------------------------------------
+log "Cấu hình HAProxy ({{ haproxy_tls_mode }})"
+# --------------------------------------------------------------------------
+cfg_changed=0
+{% if haproxy_tls_mode == 'terminate' %}
+install -d -m 0700 -o root -g root '{{ cert_dir }}'
+put_file "${F}/site.pem" '{{ cert_file }}' 0600 root:root && cfg_changed=1 || true
+{% endif %}
+haproxy -c -q -f "${F}/haproxy.cfg" || die "haproxy.cfg không hợp lệ (xem lỗi ở trên); cấu hình đang chạy giữ nguyên."
+put_file "${F}/haproxy.cfg" "${CFG}" 0640 root:haproxy && cfg_changed=1 || true
+systemctl enable haproxy >/dev/null
+if ! systemctl is-active --quiet haproxy || [ "${override_changed}" = 1 ]; then
+  systemctl restart haproxy
+elif [ "${cfg_changed}" = 1 ]; then
+  systemctl reload haproxy   # không cắt kết nối đang chạy
+fi
+
+{% if haproxy_vip_enabled | bool %}
+# --------------------------------------------------------------------------
+log "VIP {{ haproxy_vip }} (keepalived)"
+# --------------------------------------------------------------------------
+install -d -m 0755 /etc/keepalived
+keepalived --config-test -f "${F}/keepalived.conf"
+if put_file "${F}/keepalived.conf" /etc/keepalived/keepalived.conf 0600 root:root; then
+  systemctl enable keepalived >/dev/null; systemctl restart keepalived
+else
+  systemctl enable --now keepalived >/dev/null
+fi
+{% else %}
+# Không có HAPROXY_VIP: không cài keepalived; trỏ DNS/tường lửa vào IP của từng máy HAProxy.
+{% endif %}
+
+log "Xong {{ inventory_hostname }}. Kiểm tra: sudo bash verify.sh"

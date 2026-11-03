@@ -39,7 +39,7 @@
 
 - name: Install Redis and OS packages
   ansible.builtin.apt:
-    name: "{{ redis_packages + os_packages }}"
+    name: "{{ redis_install_packages }}"
     state: present
     update_cache: true
     cache_valid_time: "{{ 0 if (redis_apt_repo.changed or redis_apt_pin.changed) else 3600 }}"

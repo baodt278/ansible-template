@@ -3,13 +3,14 @@
 #   scripts/run.sh redis preflight
 #   scripts/run.sh haproxy setup
 #   scripts/run.sh redis clear -e confirm_clear=yes
+#   scripts/run.sh redis bundle      # không SSH: sinh bundle/redis/<máy>/install.sh để chép lên và chạy tay
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${ENV_FILE:-${ROOT_DIR}/.env}"
 
 usage() {
-  echo "Usage: $0 <redis|haproxy> <preflight|setup|verify|clear> [ansible-playbook args...]" >&2
+  echo "Usage: $0 <redis|haproxy> <preflight|setup|verify|clear|bundle> [ansible-playbook args...]" >&2
   exit 1
 }
 

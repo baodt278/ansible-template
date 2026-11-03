@@ -4,10 +4,17 @@ Ansible cài hai thành phần hạ tầng cho hệ thống chạy trên cụm K
 
 | Thư mục | Cài gì | Số máy |
 |---|---|---|
-| [`redis/`](redis/) | Redis 7.4 (kho `packages.redis.io`, ghim dòng 7.4) + Sentinel + keepalived VIP đi theo master. Cấu hình sẵn cho hàng đợi BullMQ (`noeviction`, AOF) | 3 |
-| [`haproxy/`](haproxy/) | HAProxy (kho Ubuntu, 24.04 là dòng LTS 2.8) + keepalived VIP, cổng vào từ Internet đẩy vào Ingress cụm Kubernetes | 2 |
+| [`redis/`](redis/) | Redis 7.4 (kho `packages.redis.io`, ghim dòng 7.4) + Sentinel + keepalived VIP đi theo master (VIP tùy chọn). Cấu hình sẵn cho hàng đợi BullMQ (`noeviction`, AOF) | 3 |
+| [`haproxy/`](haproxy/) | HAProxy (kho Ubuntu, 24.04 là dòng LTS 2.8) + keepalived VIP (tùy chọn), cổng vào từ Internet đẩy vào Ingress cụm Kubernetes | 2 |
 
 MariaDB không nằm ở đây (bên khác cài).
+
+Có hai cách cài:
+
+- **Qua SSH** (`setup`): Ansible trên máy điều khiển SSH vào từng máy chủ.
+- **Không SSH** (`bundle`): dùng khi các máy không mở cổng 22 cho nhau, chỉ vào được từng máy qua Teleport. Ansible sinh sẵn cho mỗi máy một thư mục gồm tệp cấu hình và `install.sh`; chép lên từng máy rồi chạy. Xem mục [Cài không qua SSH](#cài-không-qua-ssh-bundle).
+
+**VIP là tùy chọn** cho cả hai nhóm: để trống `REDIS_VIP` / `HAPROXY_VIP` trong `.env` thì không cài keepalived. Có IP trống sau thì điền vào rồi chạy lại.
 
 ## Mô hình
 
@@ -64,9 +71,9 @@ flowchart LR
 
 ```
 
-**Redis.** Ba nút: 1 master và 2 replica, mỗi nút có một Sentinel (quorum 2). Ứng dụng chỉ nhận **một** địa chỉ Redis (`REDIS_URL`), nên có thêm VIP keepalived. Script kiểm tra trên mỗi nút chỉ đạt khi Sentinel cục bộ coi nút đó là master **và** Redis cục bộ đang `ROLE master`. Nhờ vậy, khi Sentinel chuyển master, VIP đi theo sau vài giây và ứng dụng không phải đổi cấu hình.
+**Redis.** Ba nút: 1 master và 2 replica, mỗi nút có một Sentinel (quorum 2). Ứng dụng hiện chỉ nhận **một** địa chỉ Redis (`REDIS_URL`), nên khi có `REDIS_VIP` thì thêm VIP keepalived. Script kiểm tra trên mỗi nút chỉ đạt khi Sentinel cục bộ coi nút đó là master **và** Redis cục bộ đang `ROLE master`. Nhờ vậy, khi Sentinel chuyển master, VIP đi theo sau vài giây và ứng dụng không phải đổi cấu hình. Chưa có VIP thì `REDIS_URL` trỏ thẳng IP master; Sentinel chuyển master thì phải đổi tay `REDIS_URL` (cho tới khi ứng dụng hỗ trợ danh sách Sentinel).
 
-**HAProxy.** Máy active giữ VIP. Khi HAProxy chết, độ ưu tiên giảm 60 (150 → 90 < 100) nên VIP chuyển sang máy standby.
+**HAProxy.** Có `HAPROXY_VIP`: máy active giữ VIP. Khi HAProxy chết, độ ưu tiên giảm 60 (150 → 90 < 100) nên VIP chuyển sang máy standby. Chưa có VIP: mỗi máy nhận trên IP riêng, DNS hoặc tường lửa trỏ vào.
 
 ## Chuẩn bị
 
@@ -87,9 +94,9 @@ flowchart LR
 
 ### Mạng — kiểm tra trước khi chạy
 
-- **VIP phải là IP trống** trong cùng mạng với card `*_VIP_INTERFACE`.
-- Trên cloud (OpenStack và tương tự), port của từng máy phải **cho phép VIP** (allowed address pairs), nếu không gói tin tới VIP bị chặn.
-- Mở **VRRP (giao thức IP 112)** giữa các máy cùng nhóm.
+- (Khi có VIP) **VIP phải là IP trống** trong cùng mạng với card `*_VIP_INTERFACE`.
+- (Khi có VIP) Trên cloud (OpenStack và tương tự), port của từng máy phải **cho phép VIP** (allowed address pairs), nếu không gói tin tới VIP bị chặn.
+- (Khi có VIP) Mở **VRRP (giao thức IP 112)** giữa các máy cùng nhóm.
 - Redis: mở 6379 và 26379 giữa 3 máy Redis, và từ các nút Kubernetes tới IP nội bộ Redis cùng VIP.
 - HAProxy: mở 80, 443 từ Internet tới VIP; từ HAProxy tới cổng Ingress của các nút Kubernetes; 8404 (thống kê, `/metrics`) chỉ từ máy giám sát.
 - Máy chủ ra được Internet: Redis cần `packages.redis.io`, cả hai nhóm cần kho Ubuntu.
@@ -113,13 +120,40 @@ Mọi tham số sau tên playbook được chuyển thẳng cho `ansible-playboo
 - **Redis.** Cấu hình áp **từng máy một** (`serial: 1`). Master được lấy theo Sentinel, nên chạy lại sau khi đã chuyển master không kéo master về máy 1. Đổi ACL được nạp nóng (`ACL LOAD`), không khởi động lại. `sentinel.conf` chỉ ghi lần đầu vì Sentinel tự ghi trạng thái vào tệp đó; muốn ghi lại thì thêm `-e redis_sentinel_reconfigure=true`.
 - **HAProxy.** Cấu hình được kiểm tra (`haproxy -c`) trước khi thay. Áp bằng `reload`, không cắt kết nối đang chạy.
 
-Gỡ để cài lại:
+Gỡ để cài lại (qua SSH):
 
 ```bash
 scripts/run.sh redis clear -e confirm_clear=yes                    # giữ dữ liệu
 scripts/run.sh redis clear -e confirm_clear=yes -e clear_data=yes  # xóa cả dữ liệu, bản sao lưu
 scripts/run.sh haproxy clear -e confirm_clear=yes
 ```
+
+## Cài không qua SSH (bundle)
+
+Dùng khi các máy không SSH được tới nhau (ví dụ chỉ vào từng máy qua Teleport). Ansible chạy **một lần trên máy của đồng chí**, không kết nối tới máy chủ nào; các máy chủ **không cần cài Ansible**.
+
+1. Điền `.env` như mục Chuẩn bị. Để trống các biến SSH (`ANSIBLE_SSH_*`, `*_SSH_HOST`); IP nội bộ (`REDIS_n_IP`, `HAPROXY_n_IP`) vẫn bắt buộc.
+2. Sinh gói:
+   ```bash
+   scripts/run.sh redis bundle
+   ```
+   ```bash
+   scripts/run.sh haproxy bundle
+   ```
+   Kết quả nằm ở `bundle/redis/redis-1/`, `redis-2/`, `redis-3/`, `bundle/haproxy/haproxy-1/`, `haproxy-2/`. Mỗi thư mục gồm `install.sh`, `verify.sh` và `files/`.
+3. Chép **đúng thư mục của máy nào lên máy đó**, ví dụ bằng `tsh scp -r bundle/redis/redis-1 root@<máy>:/root/` hoặc tải tệp lên qua giao diện web Teleport (nén `tar czf` trước cho tiện).
+4. Trên từng máy, chạy bằng root:
+   ```bash
+   sudo bash install.sh
+   ```
+   Thứ tự Redis: **redis-1 (master) trước**, rồi redis-2, redis-3. Xong cả ba thì chạy `sudo bash verify.sh` trên một máy bất kỳ. Với HAProxy, chạy `install.sh` rồi `verify.sh` trên từng máy.
+5. **Xóa thư mục gói trên máy chủ và trên máy mình sau khi cài.** Gói chứa mật khẩu và khóa TLS; `bundle/` đã có trong `.gitignore`.
+
+Các máy Redis tự nối với nhau qua IP nội bộ (nhân bản cổng 6379, Sentinel cổng 26379). **Không cần SSH giữa các máy, nhưng hai cổng này phải mở giữa 3 máy Redis.** `install.sh` trên replica sẽ báo lỗi rõ ràng nếu không nối được master.
+
+`install.sh` làm đúng các bước như `setup`: cài gói (ghim 7.4), tạo user và thư mục, sysctl, đặt cấu hình, bật dịch vụ, chờ đồng bộ, Sentinel, keepalived (nếu có VIP), sao lưu. Chạy lại được nhiều lần; chỉ khởi động lại khi cấu hình đổi. Sửa `.env` thì sinh lại gói, chép lại và chạy lại `install.sh`.
+
+Gói sinh cho lần cài đầu, coi máy `redis_initial_role: master` là master. Cụm đã chạy và Sentinel đã chuyển master thì khi sinh lại phải chỉ rõ master hiện tại: `scripts/run.sh redis bundle -e redis_current_master_ip=<IP>`.
 
 ## Nối ứng dụng
 
@@ -128,6 +162,8 @@ scripts/run.sh haproxy clear -e confirm_clear=yes
 ```
 REDIS_URL=redis://vtvl:<REDIS_APP_PASSWORD>@<REDIS_VIP>:6379
 ```
+
+Chưa có VIP: thay `<REDIS_VIP>` bằng IP nội bộ của master (lần đầu là `REDIS_1_IP`). `verify` in sẵn dòng này với đúng địa chỉ.
 
 Người dùng ACL do playbook tạo. Mật khẩu lưu dạng băm SHA-256 trong `users.acl`.
 
@@ -139,7 +175,7 @@ Người dùng ACL do playbook tạo. Mật khẩu lưu dạng băm SHA-256 tron
 | `sentinel-monitor` | Sentinel theo dõi, chuyển master | Theo danh sách quyền trong tài liệu Sentinel |
 | `exporter` | redis_exporter (Prometheus) | `INFO`, `CONFIG GET`, `SLOWLOG`… Không đọc nội dung khóa |
 
-Bước `verify` thử đúng các lệnh ứng dụng dùng qua VIP: `PING`, `CLIENT SETNAME`, `INFO`, `SET`, `EVAL`, `PUBLISH`, `DEL`. Bước này cũng xác nhận `FLUSHALL` và `CONFIG SET` bị chặn.
+Bước `verify` thử đúng các lệnh ứng dụng dùng, qua VIP (hoặc IP master khi chưa có VIP): `PING`, `CLIENT SETNAME`, `INFO`, `SET`, `EVAL`, `PUBLISH`, `DEL`. Bước này cũng xác nhận `FLUSHALL` và `CONFIG SET` bị chặn.
 
 Ứng dụng mới cần lệnh bị chặn: sửa `redis_app_acl_rules` trong [`redis/ansible/group_vars/all.yml`](redis/ansible/group_vars/all.yml), rồi chạy lại `setup`.
 
@@ -179,13 +215,14 @@ scripts/setup-ssh-keys.sh
 redis/ansible/
   inventory/hosts.yml     # 3 máy, đọc IP từ .env
   group_vars/all.yml      # mọi tham số Redis/Sentinel/ACL/VIP
-  playbooks/{preflight,setup,verify,clear}.yml
+  playbooks/{preflight,setup,verify,clear,bundle}.yml
   tasks/redis-*.yml
-  templates/              # redis.conf, users.acl, sentinel.conf, unit systemd, keepalived, sao lưu
+  templates/              # redis.conf, users.acl, sentinel.conf, unit systemd, keepalived, sao lưu,
+                          # install.sh / verify.sh của bundle
 haproxy/ansible/
   inventory/hosts.yml     # 2 máy (active, standby)
   group_vars/all.yml
-  playbooks/{preflight,setup,verify,clear}.yml
+  playbooks/{preflight,setup,verify,clear,bundle}.yml
   tasks/haproxy-*.yml
   templates/              # haproxy.cfg, keepalived
 ```

@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+# Redis: fork cho BGSAVE/AOF rewrite không thất bại khi thiếu bộ nhớ ảo
+vm.overcommit_memory = 1
+net.core.somaxconn = 65535
+{% if redis_vip_enabled | bool %}
+# Cho Redis bind sẵn VIP khi VIP đang ở máy khác
+net.ipv4.ip_nonlocal_bind = 1
+{% endif %}

@@ -3,8 +3,12 @@
 # vào bản đang chạy; Ansible chỉ chép đè khi bản tham chiếu đổi.
 
 # ---- Mạng ----
+{% if redis_vip_enabled | bool %}
 # VIP được bind sẵn nhờ net.ipv4.ip_nonlocal_bind=1 (chỉ nhận kết nối khi VIP đang ở máy này).
 bind {{ redis_ip }} {{ redis_vip }} 127.0.0.1
+{% else %}
+bind {{ redis_ip }} 127.0.0.1
+{% endif %}
 port {{ redis_port }}
 protected-mode yes
 tcp-backlog {{ redis_tcp_backlog }}

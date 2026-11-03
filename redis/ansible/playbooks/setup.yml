@@ -1,6 +1,6 @@
 ---
 # Thứ tự: kiểm tra → cài gói → chuẩn bị máy → xác định master → cấu hình Redis (từng máy một)
-# → Sentinel → VIP keepalived → sao lưu → kiểm tra. Chạy lại được nhiều lần.
+# → Sentinel → VIP keepalived (nếu có REDIS_VIP) → sao lưu → kiểm tra. Chạy lại được nhiều lần.
 - name: Install and prepare Redis nodes
   hosts: redis
   gather_facts: true
@@ -44,6 +44,7 @@
 
     - name: Configure Redis VIP failover
       ansible.builtin.import_tasks: ../tasks/redis-failover.yml
+      when: redis_vip_enabled | bool
 
     - name: Configure Redis backups
       ansible.builtin.import_tasks: ../tasks/redis-backup.yml

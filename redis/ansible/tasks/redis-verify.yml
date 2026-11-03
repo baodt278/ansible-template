@@ -7,10 +7,7 @@
     that:
       - ansible_facts.services[item ~ '.service'].state | default('') == 'running'
     fail_msg: "{{ item }} is not running on {{ inventory_hostname }}."
-  loop:
-    - "{{ redis_service_name }}"
-    - "{{ sentinel_service_name }}"
-    - keepalived
+  loop: "{{ [redis_service_name, sentinel_service_name] + (['keepalived'] if redis_vip_enabled | bool else []) }}"
 
 - name: Read Redis version
   ansible.builtin.command: redis-server --version
@@ -48,20 +45,26 @@
   changed_when: false
   failed_when: redis_verify_quorum.stdout is not search('^OK')
 
+- name: Pick entry address (VIP, or the Sentinel master when no VIP)
+  ansible.builtin.set_fact:
+    redis_entry_host: "{{ redis_vip if redis_vip_enabled | bool else redis_verify_master.stdout_lines[0] }}"
+
 - name: Read VIP state
   ansible.builtin.command: ip -o -4 addr show dev {{ redis_vip_interface }}
   register: redis_verify_vip
   changed_when: false
+  when: redis_vip_enabled | bool
 
 - name: Confirm VIP is on the Sentinel master only
   ansible.builtin.assert:
     that:
       - ((' ' ~ redis_vip ~ '/') in redis_verify_vip.stdout) == (redis_ip == redis_verify_master.stdout_lines[0])
     fail_msg: "VIP {{ redis_vip }} placement on {{ inventory_hostname }} does not match Sentinel master {{ redis_verify_master.stdout_lines[0] }}."
+  when: redis_vip_enabled | bool
 
-- name: Read master replication info through the VIP
+- name: Read master replication info through the entry address
   ansible.builtin.command:
-    argv: [redis-cli, -h, "{{ redis_vip }}", -p, "{{ redis_port }}", --no-auth-warning, INFO, replication]
+    argv: [redis-cli, -h, "{{ redis_entry_host }}", -p, "{{ redis_port }}", --no-auth-warning, INFO, replication]
   environment:
     REDISCLI_AUTH: "{{ redis_admin_password }}"
   register: redis_verify_repl
@@ -93,10 +96,10 @@
     fail_msg: "maxmemory-policy must be noeviction and appendonly yes."
 
 # Mô phỏng các lệnh ứng dụng gửi (Lettuce/ioredis bắt tay, BullMQ đọc INFO, chạy Lua, pub/sub).
-- name: Smoke test application user through the VIP
+- name: Smoke test application user through the entry address
   ansible.builtin.shell: |
     set -euo pipefail
-    cli() { redis-cli -h '{{ redis_vip }}' -p '{{ redis_port }}' --user '{{ redis_app_user }}' --no-auth-warning "$@"; }
+    cli() { redis-cli -h '{{ redis_entry_host }}' -p '{{ redis_port }}' --user '{{ redis_app_user }}' --no-auth-warning "$@"; }
     test "$(cli PING)" = PONG
     test "$(cli CLIENT SETNAME ansible-smoke)" = OK
     cli INFO server | grep -q '^redis_version:{{ redis_version_series }}\.'
@@ -117,5 +120,7 @@
 
 - name: Show application connection string (without password)
   ansible.builtin.debug:
-    msg: "REDIS_URL=redis://{{ redis_app_user }}:<REDIS_APP_PASSWORD>@{{ redis_vip }}:{{ redis_port }}"
+    msg: >-
+      REDIS_URL=redis://{{ redis_app_user }}:<REDIS_APP_PASSWORD>@{{ redis_entry_host }}:{{ redis_port }}
+      {{ '' if redis_vip_enabled | bool else '(IP master hiện tại; chưa có VIP nên phải đổi tay nếu Sentinel chuyển master)' }}
   run_once: true

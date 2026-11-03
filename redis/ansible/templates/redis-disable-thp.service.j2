@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Disable Transparent Huge Pages (Redis latency)
+DefaultDependencies=no
+After=sysinit.target local-fs.target
+Before={{ redis_service_name }}.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'echo never > /sys/kernel/mm/transparent_hugepage/enabled && echo never > /sys/kernel/mm/transparent_hugepage/defrag'
+
+[Install]
+WantedBy=basic.target

@@ -1,6 +1,6 @@
 ---
 # =============================================================================
-# HAProxy + keepalived — 2 máy vùng DMZ, cổng vào duy nhất từ Internet (443, 80 → 443)
+# HAProxy (+ keepalived VIP nếu có HAPROXY_VIP) — 2 máy vùng DMZ, cổng vào duy nhất từ Internet (443, 80 → 443)
 # đẩy vào Ingress cụm VKE. Ingress định tuyến theo đường dẫn (/, /api, /oauth2, /login/oauth2,
 # /auth, /ban-cai, /otlp). Cài trực tuyến từ kho Ubuntu. Bí mật đọc từ .env.
 # =============================================================================
@@ -9,7 +9,6 @@ templates_dir: "{{ playbook_dir }}/../templates"
 
 haproxy_packages:
   - haproxy
-  - keepalived
   - ca-certificates
 
 config_dir: /etc/haproxy
@@ -19,7 +18,11 @@ cert_file: "{{ cert_dir }}/site.pem"
 # -----------------------------------------------------------------------------
 # Keepalived VIP (máy active giữ VIP; HAProxy chết → VIP sang máy standby)
 # -----------------------------------------------------------------------------
+# VIP là tùy chọn: để trống HAPROXY_VIP thì không cài keepalived, mỗi máy HAProxy nhận trên IP riêng
+# (DNS/tường lửa trỏ vào một hoặc cả hai). Điền VIP sau rồi chạy lại setup/bundle là có.
 haproxy_vip: "{{ lookup('ansible.builtin.env', 'HAPROXY_VIP') }}"
+haproxy_vip_enabled: "{{ haproxy_vip | length > 0 }}"
+haproxy_install_packages: "{{ haproxy_packages + (['keepalived'] if haproxy_vip_enabled | bool else []) }}"
 haproxy_vip_prefix: "{{ lookup('ansible.builtin.env', 'HAPROXY_VIP_PREFIX') }}"
 haproxy_vip_interface: "{{ lookup('ansible.builtin.env', 'HAPROXY_VIP_INTERFACE') }}"
 haproxy_vrrp_router_id: "{{ lookup('ansible.builtin.env', 'HAPROXY_VRRP_ROUTER_ID') }}"

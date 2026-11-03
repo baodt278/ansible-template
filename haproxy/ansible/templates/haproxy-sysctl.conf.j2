@@ -1,0 +1,6 @@
+# {{ ansible_managed }}
+# Cho HAProxy bind VIP khi VIP đang ở máy kia
+net.ipv4.ip_nonlocal_bind = 1
+net.core.somaxconn = 65535
+net.ipv4.tcp_max_syn_backlog = 65535
+net.ipv4.ip_local_port_range = 1024 65000

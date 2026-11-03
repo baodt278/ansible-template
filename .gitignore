@@ -5,6 +5,8 @@
 *.pem
 *.key
 *.crt
+# Gói cài sinh ra (chứa mật khẩu, khóa TLS)
+bundle/
 **/ansible/.vault-pass
 **/inventory/host_vars/
 

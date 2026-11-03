@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Kiểm tra cả cụm Redis sau khi đã cài đủ 3 máy. Chạy trên máy bất kỳ trong cụm: sudo bash verify.sh
+set -uo pipefail
+fail=0
+ok()  { printf '  [OK]   %s\n' "$*"; }
+bad() { printf '  [LỖI]  %s\n' "$*"; fail=1; }
+
+sentinel() { REDISCLI_AUTH='{{ redis_sentinel_password }}' redis-cli -h 127.0.0.1 -p '{{ sentinel_port }}' --no-auth-warning "$@"; }
+admin()    { REDISCLI_AUTH='{{ redis_admin_password }}' redis-cli -h "$1" -p '{{ redis_port }}' --no-auth-warning "${@:2}"; }
+app()      { REDISCLI_AUTH='{{ redis_app_password }}' redis-cli -h "${ENTRY}" -p '{{ redis_port }}' --user '{{ redis_app_user }}' --no-auth-warning "$@"; }
+
+echo "== Dịch vụ trên máy này"
+for s in '{{ redis_service_name }}' '{{ sentinel_service_name }}'{{ " keepalived" if redis_vip_enabled | bool else "" }}; do
+  systemctl is-active --quiet "$s" && ok "$s đang chạy" || bad "$s không chạy"
+done
+
+echo "== Sentinel"
+master="$(sentinel SENTINEL get-master-addr-by-name '{{ sentinel_master_name }}' 2>/dev/null | head -n1)"
+[ -n "${master}" ] && ok "master theo Sentinel: ${master}" || bad "Sentinel không trả master"
+q="$(sentinel SENTINEL ckquorum '{{ sentinel_master_name }}' 2>&1)"
+[[ "${q}" == OK* ]] && ok "${q}" || bad "quorum: ${q}"
+{% if redis_vip_enabled | bool %}
+ENTRY='{{ redis_vip }}'
+{% else %}
+# Không có VIP: kiểm qua IP master hiện tại (ứng dụng cũng phải trỏ vào đây).
+ENTRY="${master}"
+{% endif %}
+
+echo "== Nhân bản (qua ${ENTRY})"
+repl="$(admin "${ENTRY}" INFO replication 2>&1 | tr -d '\r')"
+grep -q '^role:master' <<<"${repl}" && ok "${ENTRY} là master" || bad "${ENTRY} không phải master"
+grep -q '^connected_slaves:2' <<<"${repl}" && ok "master có 2 replica" || bad "master không đủ 2 replica: $(grep '^connected_slaves' <<<"${repl}")"
+for ip in {{ groups[cluster_group] | map('extract', hostvars, 'redis_ip') | join(' ') }}; do
+  role="$(admin "${ip}" ROLE 2>/dev/null | head -n1)"
+  [ -n "${role}" ] && ok "${ip}: ${role}" || bad "${ip}: không kết nối được (cổng {{ redis_port }} giữa các máy?)"
+done
+
+echo "== Cấu hình cho BullMQ"
+[ "$(admin 127.0.0.1 CONFIG GET maxmemory-policy | sed -n 2p)" = noeviction ] && ok "maxmemory-policy noeviction" || bad "maxmemory-policy phải là noeviction"
+[ "$(admin 127.0.0.1 CONFIG GET appendonly | sed -n 2p)" = yes ] && ok "appendonly yes" || bad "appendonly phải là yes"
+
+echo "== Người dùng ứng dụng {{ redis_app_user }} qua ${ENTRY}"
+key='{{ redis_app_user }}:install-check'
+[ "$(app PING 2>&1)" = PONG ] && ok "PING" || bad "PING"
+[ "$(app CLIENT SETNAME install-check 2>&1)" = OK ] && ok "CLIENT SETNAME" || bad "CLIENT SETNAME"
+app INFO server 2>/dev/null | grep -q '^redis_version:{{ redis_version_series }}\.' && ok "INFO (Redis {{ redis_version_series }})" || bad "INFO"
+[ "$(app SET "${key}" 1 EX 60 2>&1)" = OK ] && ok "SET" || bad "SET"
+[ "$(app EVAL "return redis.call('INCR', KEYS[1])" 1 "${key}" 2>&1)" = 2 ] && ok "EVAL (Lua)" || bad "EVAL"
+app PUBLISH "${key}" hi >/dev/null 2>&1 && ok "PUBLISH" || bad "PUBLISH"
+[ "$(app DEL "${key}" 2>&1)" = 1 ] && ok "DEL" || bad "DEL"
+app FLUSHALL 2>&1 | grep -q NOPERM && ok "FLUSHALL bị chặn" || bad "FLUSHALL KHÔNG bị chặn"
+app CONFIG SET maxmemory 1 2>&1 | grep -q NOPERM && ok "CONFIG SET bị chặn" || bad "CONFIG SET KHÔNG bị chặn"
+
+echo
+if [ "${fail}" = 0 ]; then
+  echo "Tất cả đạt. REDIS_URL=redis://{{ redis_app_user }}:<REDIS_APP_PASSWORD>@${ENTRY}:{{ redis_port }}"
+{% if not redis_vip_enabled | bool %}
+  echo "(Chưa có VIP: nếu Sentinel chuyển master, phải đổi REDIS_URL sang IP master mới.)"
+{% endif %}
+else
+  echo "Có mục LỖI ở trên."; exit 1
+fi

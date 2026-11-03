@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Kiểm tra HAProxy trên {{ inventory_hostname }}: sudo bash verify.sh
+set -uo pipefail
+fail=0
+ok()  { printf '  [OK]   %s\n' "$*"; }
+bad() { printf '  [LỖI]  %s\n' "$*"; fail=1; }
+warn(){ printf '  [CHÚ Ý] %s\n' "$*"; }
+
+echo "== Dịch vụ"
+services=(haproxy{{ ' keepalived' if haproxy_vip_enabled | bool else '' }})
+for s in "${services[@]}"; do
+  systemctl is-active --quiet "$s" && ok "$s đang chạy" || bad "$s không chạy"
+done
+haproxy -c -q -f '{{ config_dir }}/haproxy.cfg' && ok "haproxy.cfg hợp lệ" || bad "haproxy.cfg lỗi"
+
+echo "== Cổng"
+for p in {{ haproxy_http_port }} {{ haproxy_https_port }}; do
+  timeout 3 bash -c "</dev/tcp/127.0.0.1/$p" 2>/dev/null && ok "đang nghe $p" || bad "không nghe $p"
+done
+timeout 3 bash -c "</dev/tcp/{{ haproxy_ip }}/{{ haproxy_stats_port }}" 2>/dev/null && ok "thống kê {{ haproxy_ip }}:{{ haproxy_stats_port }}" || bad "không nghe {{ haproxy_ip }}:{{ haproxy_stats_port }}"
+
+{% if haproxy_tls_mode == 'terminate' %}
+echo "== HTTP"
+code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:{{ haproxy_http_port }}/)
+[ "${code}" = 301 ] && ok "80 chuyển sang HTTPS" || bad "80 trả ${code}, cần 301"
+code=$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:{{ haproxy_https_port }}/auth/admin/)
+[ "${code}" = 404 ] && ok "/auth/admin bị chặn" || bad "/auth/admin trả ${code}, cần 404"
+hdr=$(curl -sk -D - -o /dev/null https://127.0.0.1:{{ haproxy_https_port }}/ | tr -d '\r')
+grep -qi '^strict-transport-security:' <<<"${hdr}" && ok "có HSTS" || bad "thiếu HSTS"
+grep -qi '^server:' <<<"${hdr}" && bad "còn lộ tiêu đề Server" || ok "không lộ tiêu đề Server"
+end=$(echo | openssl s_client -connect 127.0.0.1:{{ haproxy_https_port }} 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
+[ -n "${end}" ] && ok "chứng chỉ hết hạn: ${end}" || bad "không đọc được chứng chỉ"
+echo | openssl s_client -connect 127.0.0.1:{{ haproxy_https_port }} -tls1_1 >/dev/null 2>&1 && bad "vẫn nhận TLS 1.1" || ok "từ chối TLS 1.1"
+{% endif %}
+
+echo "== Ingress"
+metrics=$(curl -s -u '{{ haproxy_stats_user }}:{{ haproxy_stats_password }}' http://{{ haproxy_ip }}:{{ haproxy_stats_port }}/metrics)
+up=$(grep -cE '^haproxy_server_status\{proxy="be_ingress",server="[^"]+",state="UP"\} 1' <<<"${metrics}")
+total={{ haproxy_ingress_servers | length }}
+if [ "${up}" = "${total}" ]; then ok "${up}/${total} Ingress UP"
+elif [ "${up}" -gt 0 ]; then warn "${up}/${total} Ingress UP (kiểm tra NodePort / tường lửa tới các nút còn lại)"
+else bad "0/${total} Ingress UP: HAProxy không tới được Ingress"; fi
+
+{% if haproxy_vip_enabled | bool %}
+echo "== VIP"
+if ip -o -4 addr show dev '{{ haproxy_vip_interface }}' | grep -q ' {{ haproxy_vip }}/'; then
+{% if role == 'active' %}
+  ok "máy active đang giữ VIP {{ haproxy_vip }}"
+{% else %}
+  warn "máy standby đang giữ VIP {{ haproxy_vip }} (máy active có chạy không?)"
+{% endif %}
+else
+{% if role == 'active' %}
+  bad "máy active không giữ VIP {{ haproxy_vip }}"
+{% else %}
+  ok "standby không giữ VIP (đúng)"
+{% endif %}
+fi
+{% endif %}
+
+echo
+[ "${fail}" = 0 ] && echo "Tất cả đạt." || { echo "Có mục LỖI ở trên."; exit 1; }

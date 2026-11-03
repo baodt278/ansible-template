@@ -1,7 +1,7 @@
 ---
-- name: Install HAProxy and keepalived
+- name: Install HAProxy (and keepalived when VIP is enabled)
   ansible.builtin.apt:
-    name: "{{ haproxy_packages }}"
+    name: "{{ haproxy_install_packages }}"
     state: present
     update_cache: true
     cache_valid_time: 3600

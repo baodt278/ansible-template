@@ -11,17 +11,7 @@
   when: haproxy_tls_mode == 'terminate'
 
 - name: Hash stats password
-  ansible.builtin.command:
-    argv: [openssl, passwd, -6, -salt, "{{ (haproxy_stats_user ~ inventory_hostname) | hash('sha256') | truncate(16, true, '') }}", -stdin]
-    stdin: "{{ haproxy_stats_password }}"
-  register: haproxy_stats_hash_out
-  changed_when: false
-  no_log: true
-
-- name: Remember stats password hash
-  ansible.builtin.set_fact:
-    haproxy_stats_password_hash: "{{ haproxy_stats_hash_out.stdout }}"
-  no_log: true
+  ansible.builtin.import_tasks: haproxy-stats-hash.yml
 
 - name: Render HAProxy configuration
   ansible.builtin.template:
@@ -34,13 +24,9 @@
   register: haproxy_config
 
 - name: Render systemd override
-  ansible.builtin.copy:
+  ansible.builtin.template:
+    src: "{{ templates_dir }}/haproxy-override.conf.j2"
     dest: /etc/systemd/system/haproxy.service.d/override.conf
-    content: |
-      [Service]
-      LimitNOFILE=200000
-      Restart=always
-      RestartSec=2s
     owner: root
     group: root
     mode: "0644"

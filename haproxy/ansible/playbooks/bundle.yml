@@ -1,0 +1,73 @@
+---
+# Không SSH: sinh trên máy điều khiển, cho mỗi máy HAProxy một thư mục bundle/haproxy/<máy>/ gồm tệp cấu hình
+# và install.sh, verify.sh. Chép thư mục lên đúng máy (Teleport: tsh scp / tải tệp lên) rồi chạy bằng root.
+- name: Build HAProxy install bundles
+  hosts: haproxy
+  connection: local
+  gather_facts: false
+  become: false
+  vars_files:
+    - ../group_vars/all.yml
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+    bundle_root: "{{ playbook_dir | dirname | dirname | dirname }}/bundle/haproxy"
+    bundle_dir: "{{ bundle_root }}/{{ inventory_hostname }}"
+  tasks:
+    - name: Validate variables
+      ansible.builtin.import_tasks: ../tasks/haproxy-validate.yml
+
+    - name: Hash stats password
+      ansible.builtin.import_tasks: ../tasks/haproxy-stats-hash.yml
+
+    - name: Remove previous bundle of this host
+      ansible.builtin.file:
+        path: "{{ bundle_dir }}"
+        state: absent
+
+    - name: Create bundle directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0700"
+      loop:
+        - "{{ bundle_root }}"
+        - "{{ bundle_dir }}"
+        - "{{ bundle_dir }}/files"
+
+    - name: Render configuration files
+      ansible.builtin.template:
+        src: "{{ templates_dir }}/{{ item.src }}"
+        dest: "{{ bundle_dir }}/files/{{ item.dest }}"
+        mode: "0600"
+      loop: >-
+        {{ [{'src': 'haproxy.cfg.j2', 'dest': 'haproxy.cfg'},
+            {'src': 'haproxy-sysctl.conf.j2', 'dest': '99-haproxy.conf'},
+            {'src': 'haproxy-override.conf.j2', 'dest': 'override.conf'}]
+           + ([{'src': 'haproxy-keepalived.conf.j2', 'dest': 'keepalived.conf'}] if haproxy_vip_enabled | bool else []) }}
+      loop_control:
+        label: "{{ item.dest }}"
+
+    - name: Copy TLS certificate
+      ansible.builtin.copy:
+        src: "{{ haproxy_tls_pem_src }}"
+        dest: "{{ bundle_dir }}/files/site.pem"
+        mode: "0600"
+      no_log: true
+      when: haproxy_tls_mode == 'terminate'
+
+    - name: Render install and verify scripts
+      ansible.builtin.template:
+        src: "{{ templates_dir }}/haproxy-{{ item }}.j2"
+        dest: "{{ bundle_dir }}/{{ item }}"
+        mode: "0700"
+      loop:
+        - install.sh
+        - verify.sh
+
+    - name: Show next steps  # noqa: run-once[task]
+      ansible.builtin.debug:
+        msg:
+          - "Bundles: {{ bundle_root }}/<host>/"
+          - "They contain the TLS private key and passwords: copy privately, delete after install."
+          - "On each HAProxy host: sudo bash install.sh, then sudo bash verify.sh"
+      run_once: true
