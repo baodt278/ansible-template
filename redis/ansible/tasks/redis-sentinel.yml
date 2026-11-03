@@ -1,6 +1,12 @@
 ---
 # Sentinel tự ghi trạng thái (epoch, nút đã biết) vào sentinel.conf: chỉ ghi lần đầu,
 # hoặc khi chạy với -e redis_sentinel_reconfigure=true.
+- name: Check which master group the current sentinel.conf monitors
+  ansible.builtin.command: grep -q "^sentinel monitor {{ sentinel_master_name }} " "{{ sentinel_dir }}/sentinel.conf"
+  register: redis_sentinel_name_check
+  changed_when: false
+  failed_when: false
+
 - name: Render Sentinel configuration
   ansible.builtin.template:
     src: "{{ templates_dir }}/redis-sentinel.conf.j2"
@@ -8,7 +14,8 @@
     owner: "{{ service_user }}"
     group: "{{ service_group }}"
     mode: "0640"
-    force: "{{ redis_sentinel_reconfigure | bool }}"
+    # Ghi lại khi chưa có, khi -e redis_sentinel_reconfigure=true, hoặc khi tên nhóm master đã đổi.
+    force: "{{ (redis_sentinel_reconfigure | bool) or redis_sentinel_name_check.rc != 0 }}"
   register: redis_sentinel_conf
 
 - name: Render Sentinel systemd unit
