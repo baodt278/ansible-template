@@ -49,7 +49,10 @@ log "Cấu hình HAProxy ({{ 'sau WAF' if haproxy_behind_waf | bool else 'ngư�
 cfg_changed=0
 install -d -m 0700 -o root -g root '{{ cert_dir }}'
 put_file "${F}/site.pem" '{{ cert_file }}' 0600 root:root && cfg_changed=1 || true
-haproxy -c -q -f "${F}/haproxy.cfg" || die "haproxy.cfg không hợp lệ (xem lỗi ở trên); cấu hình đang chạy giữ nguyên."
+if ! chk=$(haproxy -c -f "${F}/haproxy.cfg" 2>&1); then
+  printf '%s\n' "${chk}" >&2
+  die "haproxy.cfg không hợp lệ (lỗi ở trên); cấu hình đang chạy giữ nguyên."
+fi
 put_file "${F}/haproxy.cfg" "${CFG}" 0640 root:haproxy && cfg_changed=1 || true
 systemctl enable haproxy >/dev/null
 if ! systemctl is-active --quiet haproxy || [ "${override_changed}" = 1 ]; then

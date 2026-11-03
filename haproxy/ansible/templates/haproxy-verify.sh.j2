@@ -12,7 +12,8 @@ services=(haproxy)
 for s in "${services[@]}"; do
   systemctl is-active --quiet "$s" && ok "$s đang chạy" || bad "$s không chạy"
 done
-haproxy -c -q -f '{{ config_dir }}/haproxy.cfg' && ok "haproxy.cfg hợp lệ" || bad "haproxy.cfg lỗi"
+if chk=$(haproxy -c -f '{{ config_dir }}/haproxy.cfg' 2>&1); then ok "haproxy.cfg hợp lệ"
+else bad "haproxy.cfg lỗi:"; printf '%s\n' "${chk}" | sed 's/^/         /'; fi
 
 echo "== Cổng"
 ports=({{ haproxy_https_port }}{{ '' if haproxy_behind_waf | bool else ' ' ~ haproxy_http_port }})
