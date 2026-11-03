@@ -153,6 +153,35 @@ Các máy Redis tự nối với nhau qua IP nội bộ (nhân bản cổng 6379
 
 `install.sh` làm đúng các bước như `setup`: cài gói (ghim 7.4), tạo user và thư mục, sysctl, đặt cấu hình, bật dịch vụ, chờ đồng bộ, Sentinel, keepalived (nếu có VIP), sao lưu. Chạy lại được nhiều lần; chỉ khởi động lại khi cấu hình đổi. Sửa `.env` thì sinh lại gói, chép lại và chạy lại `install.sh`.
 
+### Chỉ `git clone` được lên máy chủ (không chép tệp được)
+
+Gói chứa mật khẩu nên **không** đưa vào repo. Thay vào đó, sinh gói ngay trên từng máy:
+
+1. Trên từng máy (root, qua terminal Teleport):
+   ```bash
+   git clone https://github.com/baodt278/ansible-template.git /root/ansible-template && cd /root/ansible-template
+   ```
+2. Tạo `.env` bằng cách **dán nội dung** `.env` đã điền sẵn trên máy mình (cùng một tệp cho cả 5 máy):
+   ```bash
+   cat > .env <<'EOF'
+   ...dán nội dung .env vào đây...
+   EOF
+   chmod 600 .env
+   ```
+   Máy HAProxy dùng `HAPROXY_TLS_MODE=terminate` thì dán thêm chứng chỉ, đúng đường dẫn ghi ở `HAPROXY_TLS_PEM_FILE` (ví dụ `/root/site.pem`): `cat > /root/site.pem <<'EOF'` … `EOF`, rồi `chmod 600 /root/site.pem`.
+3. Cài. Script tự nhận ra máy này là máy nào (so IP máy với `REDIS_n_IP` / `HAPROXY_n_IP`), tự cài `ansible-core` từ kho Ubuntu nếu chưa có, sinh cấu hình cho riêng máy này rồi chạy `install.sh`:
+   ```bash
+   sudo scripts/install-here.sh redis
+   ```
+   Thứ tự Redis: máy redis-1 trước, rồi hai máy còn lại. Xong cả ba thì chạy trên một máy bất kỳ:
+   ```bash
+   sudo scripts/install-here.sh redis verify
+   ```
+   HAProxy: `sudo scripts/install-here.sh haproxy`, rồi `sudo scripts/install-here.sh haproxy verify` trên từng máy.
+4. Cài xong, xóa bí mật trên máy chủ: `rm -rf /root/ansible-template/.env /root/ansible-template/bundle /root/site.pem`. Giữ bản `.env` gốc ở máy mình.
+
+Đổi cấu hình sau này: `git pull`, dán lại `.env`, chạy lại `install-here.sh`; chỉ dịch vụ có cấu hình đổi mới khởi động lại.
+
 Gói sinh cho lần cài đầu, coi máy `redis_initial_role: master` là master. Cụm đã chạy và Sentinel đã chuyển master thì khi sinh lại phải chỉ rõ master hiện tại: `scripts/run.sh redis bundle -e redis_current_master_ip=<IP>`.
 
 ## Nối ứng dụng
@@ -211,6 +240,7 @@ Thống kê và Prometheus chỉ nghe trên IP nội bộ của máy: `http://<H
 ```
 .env.example              # mẫu biến, ${...} điền sau
 scripts/run.sh            # nạp .env rồi chạy playbook
+scripts/install-here.sh   # chạy ngay trên máy chủ: nhận ra máy, sinh cấu hình, cài
 scripts/setup-ssh-keys.sh
 redis/ansible/
   inventory/hosts.yml     # 3 máy, đọc IP từ .env
