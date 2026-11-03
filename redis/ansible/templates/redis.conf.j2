@@ -1,0 +1,80 @@
+# {{ ansible_managed }}
+# Bản tham chiếu: {{ config_dir }}/{{ redis_service_name }}.conf.managed. Sentinel có thể ghi thêm (CONFIG REWRITE)
+# vào bản đang chạy; Ansible chỉ chép đè khi bản tham chiếu đổi.
+
+# ---- Mạng ----
+# VIP được bind sẵn nhờ net.ipv4.ip_nonlocal_bind=1 (chỉ nhận kết nối khi VIP đang ở máy này).
+bind {{ redis_ip }} {{ redis_vip }} 127.0.0.1
+port {{ redis_port }}
+protected-mode yes
+tcp-backlog {{ redis_tcp_backlog }}
+timeout {{ redis_timeout }}
+tcp-keepalive {{ redis_tcp_keepalive }}
+maxclients {{ redis_maxclients }}
+
+# ---- Tiến trình ----
+daemonize no
+supervised systemd
+pidfile {{ run_dir }}/{{ redis_service_name }}.pid
+logfile {{ log_dir }}/redis.log
+loglevel notice
+
+# ---- Xác thực (ACL; mật khẩu băm SHA-256) ----
+aclfile {{ config_dir }}/users.acl
+acllog-max-len 256
+
+# ---- Lưu bền: RDB + AOF ----
+dir {{ data_dir }}
+dbfilename dump.rdb
+{% for rule in redis_save_schedule %}
+save {{ rule }}
+{% endfor %}
+stop-writes-on-bgsave-error yes
+rdbcompression yes
+rdbchecksum yes
+appendonly yes
+appendfilename "appendonly.aof"
+appenddirname "appendonlydir"
+appendfsync {{ redis_appendfsync }}
+no-appendfsync-on-rewrite no
+auto-aof-rewrite-percentage 100
+auto-aof-rewrite-min-size 64mb
+aof-use-rdb-preamble yes
+aof-load-truncated yes
+
+# ---- Nhân bản (Sentinel điều khiển sau lần cài đầu) ----
+masteruser {{ redis_repl_user }}
+masterauth {{ redis_repl_password }}
+replica-announce-ip {{ redis_ip }}
+replica-announce-port {{ redis_port }}
+{% if redis_ip != redis_current_master_ip %}
+replicaof {{ redis_current_master_ip }} {{ redis_port }}
+{% endif %}
+replica-read-only yes
+replica-serve-stale-data no
+replica-priority 100
+repl-diskless-sync yes
+repl-diskless-sync-delay 5
+repl-timeout 60
+repl-backlog-size 64mb
+min-replicas-to-write {{ redis_min_replicas_to_write }}
+min-replicas-max-lag {{ redis_min_replicas_max_lag }}
+
+# ---- Bộ nhớ: BullMQ bắt buộc noeviction ----
+maxmemory {{ redis_maxmemory }}
+maxmemory-policy {{ redis_maxmemory_policy }}
+
+# ---- Giới hạn bộ đệm client ----
+client-output-buffer-limit normal 0 0 0
+client-output-buffer-limit replica 512mb 128mb 60
+client-output-buffer-limit pubsub 32mb 8mb 60
+
+# ---- Bảo mật ----
+enable-protected-configs no
+enable-debug-command no
+enable-module-command no
+
+# ---- Theo dõi ----
+slowlog-log-slower-than 10000
+slowlog-max-len 256
+latency-monitor-threshold 100

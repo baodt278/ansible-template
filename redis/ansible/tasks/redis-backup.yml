@@ -1,0 +1,20 @@
+---
+- name: Render backup script
+  ansible.builtin.template:
+    src: "{{ templates_dir }}/redis-backup.sh.j2"
+    dest: /usr/local/sbin/redis-backup.sh
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Validate backup script syntax
+  ansible.builtin.command: bash -n /usr/local/sbin/redis-backup.sh
+  changed_when: false
+
+- name: Install backup schedule
+  ansible.builtin.template:
+    src: "{{ templates_dir }}/redis-cron.j2"
+    dest: /etc/cron.d/vtvl-redis-backup
+    owner: root
+    group: root
+    mode: "0644"

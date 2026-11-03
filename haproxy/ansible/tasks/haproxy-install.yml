@@ -1,0 +1,19 @@
+---
+- name: Install HAProxy and keepalived
+  ansible.builtin.apt:
+    name: "{{ haproxy_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    install_recommends: false
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+- name: Read HAProxy version
+  ansible.builtin.command: haproxy -v
+  register: haproxy_version_out
+  changed_when: false
+
+- name: Show HAProxy version
+  ansible.builtin.debug:
+    msg: "{{ haproxy_version_out.stdout_lines[0] }}"

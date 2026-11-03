@@ -1,0 +1,10 @@
+---
+- name: Verify HAProxy
+  hosts: haproxy
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Verify HAProxy installation
+      ansible.builtin.import_tasks: ../tasks/haproxy-verify.yml

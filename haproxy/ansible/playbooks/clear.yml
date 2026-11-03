@@ -1,0 +1,11 @@
+---
+# Gỡ để cài lại. Bắt buộc: -e confirm_clear=yes.
+- name: Clear HAProxy
+  hosts: haproxy
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Clear HAProxy installation
+      ansible.builtin.import_tasks: ../tasks/haproxy-clear.yml

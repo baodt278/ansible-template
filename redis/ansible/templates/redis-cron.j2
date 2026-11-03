@@ -1,0 +1,4 @@
+# {{ ansible_managed }}
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+{{ backup_cron }} root /usr/local/sbin/redis-backup.sh 2>&1 | logger -t redis-backup

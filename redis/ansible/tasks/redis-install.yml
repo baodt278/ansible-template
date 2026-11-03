@@ -1,0 +1,71 @@
+---
+- name: Create APT keyrings directory
+  ansible.builtin.file:
+    path: "{{ redis_apt_keyring | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download Redis APT signing key
+  ansible.builtin.get_url:
+    url: "{{ redis_apt_key_url }}"
+    dest: "{{ redis_apt_keyring }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Add Redis APT repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/redis.list
+    content: "deb [signed-by={{ redis_apt_keyring }}] {{ redis_apt_repo_url }} {{ ansible_facts.distribution_release }} main\n"
+    owner: root
+    group: root
+    mode: "0644"
+  register: redis_apt_repo
+
+# Ghim dòng phiên bản: apt chỉ nâng bản vá trong cùng dòng (vd 7.4.x), không tự lên 8.x.
+- name: Pin Redis packages to the configured series
+  ansible.builtin.copy:
+    dest: /etc/apt/preferences.d/redis
+    content: |
+      Package: redis redis-server redis-tools redis-sentinel
+      Pin: version *{{ redis_version_series }}.*
+      Pin-Priority: 1001
+    owner: root
+    group: root
+    mode: "0644"
+  register: redis_apt_pin
+
+- name: Install Redis and OS packages
+  ansible.builtin.apt:
+    name: "{{ redis_packages + os_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: "{{ 0 if (redis_apt_repo.changed or redis_apt_pin.changed) else 3600 }}"
+    install_recommends: false
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+# Gói tự bật redis-server.service trên 127.0.0.1:6379; dịch vụ của ta dùng unit riêng.
+- name: Stop and mask packaged Redis units
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+    masked: true
+  loop:
+    - redis-server.service
+    - redis-sentinel.service
+  failed_when: false
+
+- name: Read installed Redis version
+  ansible.builtin.command: redis-server --version
+  register: redis_version_out
+  changed_when: false
+
+- name: Confirm Redis version series
+  ansible.builtin.assert:
+    that:
+      - ("v=" ~ redis_version_series ~ ".") in redis_version_out.stdout
+    fail_msg: "Installed Redis is not {{ redis_version_series }}.x: {{ redis_version_out.stdout }}"

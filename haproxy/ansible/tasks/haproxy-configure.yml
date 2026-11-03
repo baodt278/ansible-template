@@ -1,0 +1,61 @@
+---
+- name: Install TLS certificate
+  ansible.builtin.copy:
+    src: "{{ haproxy_tls_pem_src }}"
+    dest: "{{ cert_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  register: haproxy_cert
+  when: haproxy_tls_mode == 'terminate'
+
+- name: Hash stats password
+  ansible.builtin.command:
+    argv: [openssl, passwd, -6, -salt, "{{ (haproxy_stats_user ~ inventory_hostname) | hash('sha256') | truncate(16, true, '') }}", -stdin]
+    stdin: "{{ haproxy_stats_password }}"
+  register: haproxy_stats_hash_out
+  changed_when: false
+  no_log: true
+
+- name: Remember stats password hash
+  ansible.builtin.set_fact:
+    haproxy_stats_password_hash: "{{ haproxy_stats_hash_out.stdout }}"
+  no_log: true
+
+- name: Render HAProxy configuration
+  ansible.builtin.template:
+    src: "{{ templates_dir }}/haproxy.cfg.j2"
+    dest: "{{ config_dir }}/haproxy.cfg"
+    owner: root
+    group: haproxy
+    mode: "0640"
+    validate: haproxy -c -f %s
+  register: haproxy_config
+
+- name: Render systemd override
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/haproxy.service.d/override.conf
+    content: |
+      [Service]
+      LimitNOFILE=200000
+      Restart=always
+      RestartSec=2s
+    owner: root
+    group: root
+    mode: "0644"
+  register: haproxy_override
+
+- name: Enable and start HAProxy
+  ansible.builtin.systemd:
+    name: haproxy
+    enabled: true
+    state: started
+    daemon_reload: "{{ haproxy_override.changed }}"
+
+# reload: không cắt kết nối đang chạy. Đổi override systemd thì cần restart.
+- name: Apply HAProxy changes
+  ansible.builtin.systemd:
+    name: haproxy
+    state: "{{ 'restarted' if haproxy_override.changed else 'reloaded' }}"
+  when: haproxy_config.changed or haproxy_override.changed or (haproxy_cert.changed | default(false))

@@ -1,0 +1,27 @@
+# {{ ansible_managed }}
+# Sentinel tự ghi trạng thái vào cuối tệp này; Ansible chỉ ghi lần đầu (hoặc -e redis_sentinel_reconfigure=true).
+bind {{ redis_ip }} 127.0.0.1
+port {{ sentinel_port }}
+protected-mode yes
+daemonize no
+supervised systemd
+pidfile {{ run_dir }}/{{ sentinel_service_name }}.pid
+logfile {{ log_dir }}/sentinel.log
+loglevel notice
+dir {{ sentinel_dir }}
+
+sentinel announce-ip {{ redis_ip }}
+sentinel announce-port {{ sentinel_port }}
+sentinel resolve-hostnames no
+sentinel deny-scripts-reconfig yes
+
+# Xác thực vào Sentinel và giữa các Sentinel với nhau
+requirepass {{ redis_sentinel_password }}
+sentinel sentinel-pass {{ redis_sentinel_password }}
+
+sentinel monitor {{ sentinel_master_name }} {{ redis_current_master_ip }} {{ redis_port }} {{ sentinel_quorum }}
+sentinel auth-user {{ sentinel_master_name }} {{ redis_sentinel_monitor_user }}
+sentinel auth-pass {{ sentinel_master_name }} {{ redis_sentinel_monitor_password }}
+sentinel down-after-milliseconds {{ sentinel_master_name }} {{ sentinel_down_after_ms }}
+sentinel failover-timeout {{ sentinel_master_name }} {{ sentinel_failover_timeout_ms }}
+sentinel parallel-syncs {{ sentinel_master_name }} {{ sentinel_parallel_syncs }}

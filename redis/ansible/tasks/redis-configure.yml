@@ -1,0 +1,105 @@
+---
+# Redis tự ghi lại tệp đang chạy (Sentinel dùng CONFIG REWRITE khi chuyển master, ACL SAVE), nên Ansible giữ
+# một bản tham chiếu *.managed (chỉ root đọc) và chỉ chép đè tệp đang chạy khi bản tham chiếu thay đổi.
+- name: Render managed Redis configuration
+  ansible.builtin.template:
+    src: "{{ templates_dir }}/redis.conf.j2"
+    dest: "{{ config_dir }}/{{ redis_service_name }}.conf.managed"
+    owner: root
+    group: root
+    mode: "0600"
+  register: redis_conf_managed
+
+- name: Render managed ACL file
+  ansible.builtin.template:
+    src: "{{ templates_dir }}/redis-users.acl.j2"
+    dest: "{{ config_dir }}/users.acl.managed"
+    owner: root
+    group: root
+    mode: "0600"
+  register: redis_acl_managed
+
+- name: Install live Redis configuration
+  ansible.builtin.copy:
+    src: "{{ config_dir }}/{{ redis_service_name }}.conf.managed"
+    dest: "{{ config_dir }}/{{ redis_service_name }}.conf"
+    remote_src: true
+    owner: "{{ service_user }}"
+    group: "{{ service_group }}"
+    mode: "0640"
+    force: "{{ redis_conf_managed.changed }}"
+  register: redis_conf_live
+
+- name: Install live ACL file
+  ansible.builtin.copy:
+    src: "{{ config_dir }}/users.acl.managed"
+    dest: "{{ config_dir }}/users.acl"
+    remote_src: true
+    owner: "{{ service_user }}"
+    group: "{{ service_group }}"
+    mode: "0640"
+    force: "{{ redis_acl_managed.changed }}"
+  register: redis_acl_live
+
+- name: Render systemd unit
+  ansible.builtin.template:
+    src: "{{ templates_dir }}/redis.service.j2"
+    dest: "/etc/systemd/system/{{ redis_service_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  register: redis_unit
+
+- name: Check whether Redis is running
+  ansible.builtin.systemd:
+    name: "{{ redis_service_name }}"
+  register: redis_active_before
+  failed_when: false
+
+# Chỉ ACL đổi: nạp lại nóng, không cần khởi động lại.
+- name: Reload ACL without restart
+  ansible.builtin.command:
+    argv: [redis-cli, -h, 127.0.0.1, -p, "{{ redis_port }}", --no-auth-warning, ACL, LOAD]
+  environment:
+    REDISCLI_AUTH: "{{ redis_admin_password }}"
+  register: redis_acl_reload
+  changed_when: redis_acl_reload.stdout == 'OK'
+  failed_when: false
+  when:
+    - redis_acl_live.changed
+    - not (redis_conf_live.changed or redis_unit.changed)
+    - (redis_active_before.status.ActiveState | default('')) == 'active'
+
+- name: Enable and (re)start Redis
+  ansible.builtin.systemd:
+    name: "{{ redis_service_name }}"
+    enabled: true
+    daemon_reload: "{{ redis_unit.changed }}"
+    state: >-
+      {{ 'restarted'
+         if (redis_conf_live.changed or redis_unit.changed
+             or (redis_acl_live.changed and (redis_acl_reload.stdout | default('')) != 'OK'))
+         else 'started' }}
+
+- name: Wait for authenticated PING
+  ansible.builtin.command:
+    argv: [redis-cli, -h, 127.0.0.1, -p, "{{ redis_port }}", --no-auth-warning, PING]
+  environment:
+    REDISCLI_AUTH: "{{ redis_admin_password }}"
+  register: redis_ping
+  until: redis_ping.stdout == 'PONG'
+  retries: 30
+  delay: 2
+  changed_when: false
+
+- name: Wait for replica to sync with master
+  ansible.builtin.command:
+    argv: [redis-cli, -h, 127.0.0.1, -p, "{{ redis_port }}", --no-auth-warning, INFO, replication]
+  environment:
+    REDISCLI_AUTH: "{{ redis_admin_password }}"
+  register: redis_repl_info
+  until: "'master_link_status:up' in redis_repl_info.stdout"
+  retries: 60
+  delay: 2
+  changed_when: false
+  when: redis_ip != redis_current_master_ip

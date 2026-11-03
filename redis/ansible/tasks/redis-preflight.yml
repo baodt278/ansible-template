@@ -1,0 +1,99 @@
+---
+- name: Validate inventory has three Redis nodes and one initial master
+  ansible.builtin.assert:
+    that:
+      - groups[cluster_group] | length == 3
+      - groups[cluster_group] | map('extract', hostvars, 'redis_initial_role') | select('equalto', 'master') | list | length == 1
+    fail_msg: "Inventory must define 3 Redis hosts with exactly one redis_initial_role: master."
+  run_once: true
+
+- name: Validate host addresses
+  ansible.builtin.assert:
+    that:
+      - ansible_host | length > 0
+      - redis_ip is match('^\d{1,3}(\.\d{1,3}){3}$')
+    fail_msg: "{{ inventory_hostname }}: SSH host or redis_ip is empty/invalid. Check REDIS_*_SSH_HOST and REDIS_*_IP in .env."
+
+- name: Validate VIP settings
+  ansible.builtin.assert:
+    that:
+      - redis_vip is match('^\d{1,3}(\.\d{1,3}){3}$')
+      - redis_vip not in (groups[cluster_group] | map('extract', hostvars, 'redis_ip') | list)
+      - redis_vip_prefix | string is match('^\d{1,2}$')
+      - redis_vip_interface | length > 0
+      - redis_vrrp_router_id | string is match('^\d{1,3}$')
+      - redis_vrrp_router_id | int >= 1 and redis_vrrp_router_id | int <= 255
+      - redis_vrrp_auth_pass | length >= 4 and redis_vrrp_auth_pass | length <= 8
+    fail_msg: "Check REDIS_VIP, REDIS_VIP_PREFIX, REDIS_VIP_INTERFACE, REDIS_VRRP_ROUTER_ID (1-255), REDIS_VRRP_AUTH_PASS (4-8 chars) in .env."
+  run_once: true
+
+# Mật khẩu nằm trong tệp cấu hình Redis/Sentinel và script bash: chỉ cho ký tự an toàn, không khoảng trắng, không dấu nháy.
+- name: Validate passwords
+  ansible.builtin.assert:
+    that:
+      - item.value is match('^[A-Za-z0-9._~-]{16,}$')
+    fail_msg: "{{ item.name }} must be at least 16 characters of A-Z a-z 0-9 . _ ~ - (e.g. openssl rand -base64 32 | tr -d '/+=')."
+  loop:
+    - { name: REDIS_ADMIN_PASSWORD, value: "{{ redis_admin_password }}" }
+    - { name: REDIS_APP_PASSWORD, value: "{{ redis_app_password }}" }
+    - { name: REDIS_REPL_PASSWORD, value: "{{ redis_repl_password }}" }
+    - { name: REDIS_SENTINEL_MONITOR_PASSWORD, value: "{{ redis_sentinel_monitor_password }}" }
+    - { name: REDIS_SENTINEL_PASSWORD, value: "{{ redis_sentinel_password }}" }
+    - { name: REDIS_EXPORTER_PASSWORD, value: "{{ redis_exporter_password }}" }
+  loop_control:
+    label: "{{ item.name }}"
+  run_once: true
+
+- name: Validate passwords are distinct
+  ansible.builtin.assert:
+    that:
+      - _pw | unique | length == _pw | length
+    fail_msg: "Redis passwords in .env must all be different."
+  vars:
+    _pw:
+      - "{{ redis_admin_password }}"
+      - "{{ redis_app_password }}"
+      - "{{ redis_repl_password }}"
+      - "{{ redis_sentinel_monitor_password }}"
+      - "{{ redis_sentinel_password }}"
+      - "{{ redis_exporter_password }}"
+  run_once: true
+
+- name: Validate operating system
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == 'Ubuntu'
+      - ansible_facts.distribution_major_version | int >= 22
+    fail_msg: "Expected Ubuntu 22.04+ (production: 24.04), found {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}."
+
+- name: Validate VIP interface exists and carries redis_ip
+  ansible.builtin.command: ip -o -4 addr show dev {{ redis_vip_interface }}
+  register: redis_iface_addr
+  changed_when: false
+  failed_when: >-
+    redis_iface_addr.rc != 0 or
+    (' ' ~ redis_ip ~ '/') not in redis_iface_addr.stdout
+
+- name: Check Internet access to Redis APT repository
+  ansible.builtin.uri:
+    url: "{{ redis_apt_key_url }}"
+    method: HEAD
+    timeout: 15
+  changed_when: false
+
+- name: Check data directory parent exists
+  ansible.builtin.stat:
+    path: "{{ data_dir | dirname }}"
+  register: redis_data_parent
+
+- name: Validate data directory parent
+  ansible.builtin.assert:
+    that:
+      - redis_data_parent.stat.isdir | default(false)
+    fail_msg: "{{ data_dir | dirname }} does not exist on {{ inventory_hostname }} (mount the data disk first)."
+
+- name: Check RAM against maxmemory
+  ansible.builtin.assert:
+    that:
+      - (redis_maxmemory | human_to_bytes) <= (ansible_facts.memtotal_mb * 1024 * 1024 * 0.75)
+    fail_msg: "redis_maxmemory {{ redis_maxmemory }} is too large for {{ ansible_facts.memtotal_mb }} MB RAM (leave room for fork on BGSAVE/AOF rewrite)."

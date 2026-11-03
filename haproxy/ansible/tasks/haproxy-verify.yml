@@ -1,0 +1,71 @@
+---
+- name: Gather service facts
+  ansible.builtin.service_facts:
+
+- name: Verify services are running
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.services[item ~ '.service'].state | default('') == 'running'
+    fail_msg: "{{ item }} is not running on {{ inventory_hostname }}."
+  loop:
+    - haproxy
+    - keepalived
+
+- name: Validate running configuration
+  ansible.builtin.command: haproxy -c -f {{ config_dir }}/haproxy.cfg
+  changed_when: false
+
+- name: Check listening ports
+  ansible.builtin.wait_for:
+    host: "{{ item.host }}"
+    port: "{{ item.port }}"
+    timeout: 10
+  loop:
+    - { host: 127.0.0.1, port: "{{ haproxy_http_port }}" }
+    - { host: 127.0.0.1, port: "{{ haproxy_https_port }}" }
+    - { host: "{{ haproxy_ip }}", port: "{{ haproxy_stats_port }}" }
+
+- name: Check HTTP redirects to HTTPS
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ haproxy_http_port }}/"
+    follow_redirects: none
+    status_code: [301, 308]
+  when: haproxy_tls_mode == 'terminate'
+
+- name: Check Keycloak admin is blocked from the Internet entry
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ haproxy_https_port }}/auth/admin/"
+    validate_certs: false
+    status_code: 404
+  when: haproxy_tls_mode == 'terminate'
+
+- name: Read backend health from Prometheus endpoint
+  ansible.builtin.uri:
+    url: "http://{{ haproxy_ip }}:{{ haproxy_stats_port }}/metrics"
+    url_username: "{{ haproxy_stats_user }}"
+    url_password: "{{ haproxy_stats_password }}"
+    force_basic_auth: true
+    return_content: true
+  register: haproxy_metrics
+  no_log: true
+
+- name: Count Ingress servers that are UP
+  ansible.builtin.set_fact:
+    haproxy_up_servers: >-
+      {{ haproxy_metrics.content | regex_findall('haproxy_server_status\{proxy="be_ingress",server="[^"]+",state="UP"\} 1') | length }}
+
+- name: Report Ingress health
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }}: {{ haproxy_up_servers }}/{{ haproxy_ingress_servers | length }} Ingress servers UP"
+
+- name: Read VIP state
+  ansible.builtin.command: ip -o -4 addr show dev {{ haproxy_vip_interface }}
+  register: haproxy_verify_vip
+  changed_when: false
+
+- name: Confirm VIP is held by exactly one node
+  ansible.builtin.assert:
+    that:
+      - groups['haproxy'] | map('extract', hostvars, ['haproxy_verify_vip', 'stdout']) | select('search', ' ' ~ haproxy_vip ~ '/') | list | length == 1
+    fail_msg: "VIP {{ haproxy_vip }} must be on exactly one HAProxy node."
+  run_once: true

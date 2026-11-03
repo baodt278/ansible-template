@@ -1,0 +1,84 @@
+---
+- name: Ensure service group exists
+  ansible.builtin.group:
+    name: "{{ service_group }}"
+    system: true
+
+- name: Ensure service user exists
+  ansible.builtin.user:
+    name: "{{ service_user }}"
+    group: "{{ service_group }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: /var/lib/redis
+    create_home: false
+
+- name: Create Redis directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ service_group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    # redis/sentinel phải ghi được thư mục cấu hình: Sentinel dùng CONFIG REWRITE, ACL SAVE ghi tệp tạm rồi đổi tên.
+    - { path: "{{ config_dir }}", owner: "{{ service_user }}", mode: "0750" }
+    - { path: "{{ data_dir }}", owner: "{{ service_user }}", mode: "0750" }
+    - { path: "{{ sentinel_dir }}", owner: "{{ service_user }}", mode: "0750" }
+    - { path: "{{ log_dir }}", owner: "{{ service_user }}", mode: "0750" }
+    - { path: "{{ backup_dir }}", owner: root, mode: "0750" }
+
+- name: Persist kernel settings
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-redis.conf
+    content: |
+      # Redis: fork cho BGSAVE/AOF rewrite không thất bại khi thiếu bộ nhớ ảo
+      vm.overcommit_memory = 1
+      net.core.somaxconn = 65535
+      # Cho Redis bind sẵn VIP khi VIP đang ở máy khác
+      net.ipv4.ip_nonlocal_bind = 1
+    owner: root
+    group: root
+    mode: "0644"
+  register: redis_sysctl
+
+- name: Apply kernel settings  # noqa: no-handler
+  ansible.builtin.command: sysctl --system
+  when: redis_sysctl.changed
+  changed_when: true
+
+- name: Install unit disabling transparent huge pages
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/disable-thp.service
+    content: |
+      [Unit]
+      Description=Disable Transparent Huge Pages (Redis latency)
+      DefaultDependencies=no
+      After=sysinit.target local-fs.target
+      Before={{ redis_service_name }}.service
+
+      [Service]
+      Type=oneshot
+      ExecStart=/bin/sh -c 'echo never > /sys/kernel/mm/transparent_hugepage/enabled && echo never > /sys/kernel/mm/transparent_hugepage/defrag'
+
+      [Install]
+      WantedBy=basic.target
+    owner: root
+    group: root
+    mode: "0644"
+  register: redis_thp_unit
+
+- name: Enable and run THP unit
+  ansible.builtin.systemd:
+    name: disable-thp.service
+    enabled: true
+    state: started
+    daemon_reload: "{{ redis_thp_unit.changed }}"
+
+- name: Render logrotate configuration
+  ansible.builtin.template:
+    src: "{{ templates_dir }}/redis-logrotate.j2"
+    dest: /etc/logrotate.d/vtvl-redis
+    owner: root
+    group: root
+    mode: "0644"

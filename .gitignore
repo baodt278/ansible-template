@@ -1,0 +1,18 @@
+# Bí mật, không bao giờ commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+**/ansible/.vault-pass
+**/inventory/host_vars/
+
+# Ansible
+*.retry
+.ansible/
+
+# Trình soạn thảo
+.idea/
+.vscode/
+.DS_Store

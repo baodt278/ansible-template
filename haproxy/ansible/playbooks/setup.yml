@@ -1,0 +1,25 @@
+---
+- name: Setup HAProxy with keepalived
+  hosts: haproxy
+  gather_facts: true
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Run HAProxy preflight checks
+      ansible.builtin.import_tasks: ../tasks/haproxy-preflight.yml
+
+    - name: Install HAProxy packages
+      ansible.builtin.import_tasks: ../tasks/haproxy-install.yml
+
+    - name: Prepare HAProxy server
+      ansible.builtin.import_tasks: ../tasks/haproxy-prepare.yml
+
+    - name: Configure HAProxy
+      ansible.builtin.import_tasks: ../tasks/haproxy-configure.yml
+
+    - name: Configure HAProxy VIP failover
+      ansible.builtin.import_tasks: ../tasks/haproxy-failover.yml
+
+    - name: Verify HAProxy installation
+      ansible.builtin.import_tasks: ../tasks/haproxy-verify.yml

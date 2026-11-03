@@ -1,0 +1,40 @@
+# {{ ansible_managed }}
+global_defs {
+    router_id {{ inventory_hostname }}
+    script_user root
+    enable_script_security
+}
+
+vrrp_script chk_redis_master {
+    script "/usr/local/sbin/redis-vip-check.sh"
+    interval 2
+    timeout 5
+    rise 2
+    fall 2
+    weight {{ redis_vrrp_master_weight }}
+}
+
+vrrp_instance REDIS_VIP {
+    # Mọi nút cùng BACKUP, cùng độ ưu tiên gốc: nút đạt chk_redis_master (+{{ redis_vrrp_master_weight }}) giữ VIP.
+    state BACKUP
+    interface {{ redis_vip_interface }}
+    virtual_router_id {{ redis_vrrp_router_id }}
+    priority {{ redis_vrrp_priority }}
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass {{ redis_vrrp_auth_pass }}
+    }
+    unicast_src_ip {{ redis_ip }}
+    unicast_peer {
+{% for host in groups[cluster_group] if host != inventory_hostname %}
+        {{ hostvars[host].redis_ip }}
+{% endfor %}
+    }
+    virtual_ipaddress {
+        {{ redis_vip }}/{{ redis_vip_prefix }} dev {{ redis_vip_interface }}
+    }
+    track_script {
+        chk_redis_master
+    }
+}

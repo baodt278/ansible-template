@@ -1,0 +1,121 @@
+---
+- name: Gather service facts
+  ansible.builtin.service_facts:
+
+- name: Verify services are running
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.services[item ~ '.service'].state | default('') == 'running'
+    fail_msg: "{{ item }} is not running on {{ inventory_hostname }}."
+  loop:
+    - "{{ redis_service_name }}"
+    - "{{ sentinel_service_name }}"
+    - keepalived
+
+- name: Read Redis version
+  ansible.builtin.command: redis-server --version
+  register: redis_verify_version
+  changed_when: false
+
+- name: Confirm Redis version series
+  ansible.builtin.assert:
+    that:
+      - ("v=" ~ redis_version_series ~ ".") in redis_verify_version.stdout
+
+- name: Ask Sentinel for the master
+  ansible.builtin.command:
+    argv: [redis-cli, -h, 127.0.0.1, -p, "{{ sentinel_port }}", --no-auth-warning,
+           SENTINEL, get-master-addr-by-name, "{{ sentinel_master_name }}"]
+  environment:
+    REDISCLI_AUTH: "{{ redis_sentinel_password }}"
+  register: redis_verify_master
+  changed_when: false
+
+- name: Confirm all Sentinels agree on one master
+  ansible.builtin.assert:
+    that:
+      - groups[cluster_group] | map('extract', hostvars, ['redis_verify_master', 'stdout_lines', 0]) | unique | list | length == 1
+    fail_msg: "Sentinels disagree on the master: {{ groups[cluster_group] | map('extract', hostvars, ['redis_verify_master', 'stdout_lines', 0]) | list }}"
+  run_once: true
+
+- name: Check Sentinel quorum
+  ansible.builtin.command:
+    argv: [redis-cli, -h, 127.0.0.1, -p, "{{ sentinel_port }}", --no-auth-warning,
+           SENTINEL, ckquorum, "{{ sentinel_master_name }}"]
+  environment:
+    REDISCLI_AUTH: "{{ redis_sentinel_password }}"
+  register: redis_verify_quorum
+  changed_when: false
+  failed_when: redis_verify_quorum.stdout is not search('^OK')
+
+- name: Read VIP state
+  ansible.builtin.command: ip -o -4 addr show dev {{ redis_vip_interface }}
+  register: redis_verify_vip
+  changed_when: false
+
+- name: Confirm VIP is on the Sentinel master only
+  ansible.builtin.assert:
+    that:
+      - ((' ' ~ redis_vip ~ '/') in redis_verify_vip.stdout) == (redis_ip == redis_verify_master.stdout_lines[0])
+    fail_msg: "VIP {{ redis_vip }} placement on {{ inventory_hostname }} does not match Sentinel master {{ redis_verify_master.stdout_lines[0] }}."
+
+- name: Read master replication info through the VIP
+  ansible.builtin.command:
+    argv: [redis-cli, -h, "{{ redis_vip }}", -p, "{{ redis_port }}", --no-auth-warning, INFO, replication]
+  environment:
+    REDISCLI_AUTH: "{{ redis_admin_password }}"
+  register: redis_verify_repl
+  changed_when: false
+  run_once: true
+
+- name: Confirm master has two connected replicas
+  ansible.builtin.assert:
+    that:
+      - "'role:master' in redis_verify_repl.stdout"
+      - "'connected_slaves:2' in redis_verify_repl.stdout"
+    fail_msg: "{{ redis_verify_repl.stdout }}"
+  run_once: true
+
+- name: Read persistence and memory policy
+  ansible.builtin.command:
+    argv: [redis-cli, -h, 127.0.0.1, -p, "{{ redis_port }}", --no-auth-warning, CONFIG, GET, "{{ item }}"]
+  environment:
+    REDISCLI_AUTH: "{{ redis_admin_password }}"
+  loop: [maxmemory-policy, appendonly]
+  register: redis_verify_cfg
+  changed_when: false
+
+- name: Confirm noeviction and AOF (required by BullMQ)
+  ansible.builtin.assert:
+    that:
+      - redis_verify_cfg.results[0].stdout_lines[1] == 'noeviction'
+      - redis_verify_cfg.results[1].stdout_lines[1] == 'yes'
+    fail_msg: "maxmemory-policy must be noeviction and appendonly yes."
+
+# Mô phỏng các lệnh ứng dụng gửi (Lettuce/ioredis bắt tay, BullMQ đọc INFO, chạy Lua, pub/sub).
+- name: Smoke test application user through the VIP
+  ansible.builtin.shell: |
+    set -euo pipefail
+    cli() { redis-cli -h '{{ redis_vip }}' -p '{{ redis_port }}' --user '{{ redis_app_user }}' --no-auth-warning "$@"; }
+    test "$(cli PING)" = PONG
+    test "$(cli CLIENT SETNAME ansible-smoke)" = OK
+    cli INFO server | grep -q '^redis_version:{{ redis_version_series }}\.'
+    cli INFO memory | grep -q '^maxmemory_policy:noeviction'
+    test "$(cli SET vtvl:ansible:smoke 1 EX 60)" = OK
+    test "$(cli EVAL "return redis.call('INCR', KEYS[1])" 1 vtvl:ansible:smoke)" = 2
+    test "$(cli PUBLISH vtvl:ansible:smoke hi)" -ge 0
+    test "$(cli DEL vtvl:ansible:smoke)" = 1
+    # Lệnh quản trị/nguy hiểm phải bị chặn
+    cli FLUSHALL 2>&1 | grep -q NOPERM
+    cli CONFIG SET maxmemory 1 2>&1 | grep -q NOPERM
+  args:
+    executable: /bin/bash
+  environment:
+    REDISCLI_AUTH: "{{ redis_app_password }}"
+  changed_when: false
+  run_once: true
+
+- name: Show application connection string (without password)
+  ansible.builtin.debug:
+    msg: "REDIS_URL=redis://{{ redis_app_user }}:<REDIS_APP_PASSWORD>@{{ redis_vip }}:{{ redis_port }}"
+  run_once: true

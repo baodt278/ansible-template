@@ -1,0 +1,11 @@
+---
+# Gỡ để cài lại. Bắt buộc: -e confirm_clear=yes. Xóa cả dữ liệu: thêm -e clear_data=yes.
+- name: Clear Redis
+  hosts: redis
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Clear Redis installation
+      ansible.builtin.import_tasks: ../tasks/redis-clear.yml

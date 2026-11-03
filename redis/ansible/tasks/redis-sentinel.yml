@@ -1,0 +1,48 @@
+---
+# Sentinel tự ghi trạng thái (epoch, nút đã biết) vào sentinel.conf: chỉ ghi lần đầu,
+# hoặc khi chạy với -e redis_sentinel_reconfigure=true.
+- name: Render Sentinel configuration
+  ansible.builtin.template:
+    src: "{{ templates_dir }}/redis-sentinel.conf.j2"
+    dest: "{{ sentinel_dir }}/sentinel.conf"
+    owner: "{{ service_user }}"
+    group: "{{ service_group }}"
+    mode: "0640"
+    force: "{{ redis_sentinel_reconfigure | bool }}"
+  register: redis_sentinel_conf
+
+- name: Render Sentinel systemd unit
+  ansible.builtin.template:
+    src: "{{ templates_dir }}/redis-sentinel.service.j2"
+    dest: "/etc/systemd/system/{{ sentinel_service_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  register: redis_sentinel_unit
+
+- name: Enable and (re)start Sentinel
+  ansible.builtin.systemd:
+    name: "{{ sentinel_service_name }}"
+    enabled: true
+    daemon_reload: "{{ redis_sentinel_unit.changed }}"
+    state: "{{ 'restarted' if (redis_sentinel_conf.changed or redis_sentinel_unit.changed) else 'started' }}"
+
+- name: Wait for Sentinels to discover each other
+  ansible.builtin.command:
+    argv:
+      - redis-cli
+      - -h
+      - 127.0.0.1
+      - -p
+      - "{{ sentinel_port }}"
+      - --no-auth-warning
+      - SENTINEL
+      - ckquorum
+      - "{{ sentinel_master_name }}"
+  environment:
+    REDISCLI_AUTH: "{{ redis_sentinel_password }}"
+  register: redis_ckquorum
+  until: redis_ckquorum.stdout is search('^OK')
+  retries: 30
+  delay: 2
+  changed_when: false

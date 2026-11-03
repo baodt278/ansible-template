@@ -1,0 +1,52 @@
+---
+# Thứ tự: kiểm tra → cài gói → chuẩn bị máy → xác định master → cấu hình Redis (từng máy một)
+# → Sentinel → VIP keepalived → sao lưu → kiểm tra. Chạy lại được nhiều lần.
+- name: Install and prepare Redis nodes
+  hosts: redis
+  gather_facts: true
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Run Redis preflight checks
+      ansible.builtin.import_tasks: ../tasks/redis-preflight.yml
+
+    - name: Install Redis packages
+      ansible.builtin.import_tasks: ../tasks/redis-install.yml
+
+    - name: Prepare Redis server
+      ansible.builtin.import_tasks: ../tasks/redis-prepare.yml
+
+    - name: Detect current Redis master
+      ansible.builtin.import_tasks: ../tasks/redis-topology.yml
+
+# Từng máy một để không bao giờ khởi động lại cả ba nút cùng lúc.
+- name: Configure Redis nodes one at a time
+  hosts: redis
+  gather_facts: false
+  become: true
+  serial: 1
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Configure Redis
+      ansible.builtin.import_tasks: ../tasks/redis-configure.yml
+
+- name: Configure Sentinel, VIP and backups
+  hosts: redis
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Configure Redis Sentinel
+      ansible.builtin.import_tasks: ../tasks/redis-sentinel.yml
+
+    - name: Configure Redis VIP failover
+      ansible.builtin.import_tasks: ../tasks/redis-failover.yml
+
+    - name: Configure Redis backups
+      ansible.builtin.import_tasks: ../tasks/redis-backup.yml
+
+    - name: Verify Redis installation
+      ansible.builtin.import_tasks: ../tasks/redis-verify.yml

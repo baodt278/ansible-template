@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Sao lưu RDB của nút này (master hoặc replica), giữ {{ backup_retention_days }} ngày.
+set -euo pipefail
+export REDISCLI_AUTH='{{ redis_admin_password }}'
+backup_root='{{ backup_dir }}'
+target_dir="${backup_root}/$(date +%Y%m%d%H%M%S)"
+
+install -d -m 0750 -o root -g root "${target_dir}"
+redis-cli -h 127.0.0.1 -p '{{ redis_port }}' --no-auth-warning --rdb "${target_dir}/dump.rdb" >/dev/null
+redis-check-rdb "${target_dir}/dump.rdb" >/dev/null
+find "${backup_root}" -mindepth 1 -maxdepth 1 -type d -mtime "+{{ backup_retention_days }}" -exec rm -rf {} +

@@ -1,0 +1,139 @@
+---
+# =============================================================================
+# Redis 7.4 + Sentinel + keepalived VIP — 3 máy Ubuntu 24.04, cài trực tuyến
+# (máy chủ tải gói từ packages.redis.io). Bí mật đọc từ biến môi trường (.env).
+# =============================================================================
+
+templates_dir: "{{ playbook_dir }}/../templates"
+
+# -----------------------------------------------------------------------------
+# Gói cài đặt — kho chính thức packages.redis.io, ghim dòng 7.4
+# -----------------------------------------------------------------------------
+redis_version_series: "7.4"
+redis_apt_key_url: https://packages.redis.io/gpg
+redis_apt_keyring: /etc/apt/keyrings/redis-archive-keyring.asc
+redis_apt_repo_url: https://packages.redis.io/deb
+redis_packages:
+  - redis-server
+  - redis-tools
+os_packages:
+  - keepalived
+  - logrotate
+  - ca-certificates
+
+# -----------------------------------------------------------------------------
+# Người dùng và thư mục
+# -----------------------------------------------------------------------------
+service_user: redis
+service_group: redis
+config_dir: /etc/redis
+data_dir: /data/redis
+sentinel_dir: /data/redis-sentinel
+log_dir: /logs/redis
+backup_dir: /data/redis-backup
+run_dir: /run/redis
+
+redis_service_name: vtvl-redis
+sentinel_service_name: vtvl-redis-sentinel
+
+# -----------------------------------------------------------------------------
+# Mạng
+# -----------------------------------------------------------------------------
+cluster_group: redis
+redis_port: 6379
+sentinel_port: 26379
+redis_vip: "{{ lookup('ansible.builtin.env', 'REDIS_VIP') }}"
+redis_vip_prefix: "{{ lookup('ansible.builtin.env', 'REDIS_VIP_PREFIX') }}"
+redis_vip_interface: "{{ lookup('ansible.builtin.env', 'REDIS_VIP_INTERFACE') }}"
+redis_vrrp_router_id: "{{ lookup('ansible.builtin.env', 'REDIS_VRRP_ROUTER_ID') }}"
+redis_vrrp_auth_pass: "{{ lookup('ansible.builtin.env', 'REDIS_VRRP_AUTH_PASS') }}"
+redis_vrrp_priority: 100
+# Nút đang là master (theo Sentinel) được cộng thêm, nên VIP đi theo master.
+redis_vrrp_master_weight: 50
+
+# -----------------------------------------------------------------------------
+# Sentinel
+# -----------------------------------------------------------------------------
+sentinel_master_name: vtvl-redis
+sentinel_quorum: 2
+sentinel_down_after_ms: 5000
+sentinel_failover_timeout_ms: 60000
+sentinel_parallel_syncs: 1
+# Đặt true (-e redis_sentinel_reconfigure=true) để ghi lại sentinel.conf theo master hiện tại.
+# Mặc định chỉ ghi lần đầu vì Sentinel tự ghi trạng thái (epoch, danh sách nút) vào tệp này.
+redis_sentinel_reconfigure: false
+
+# -----------------------------------------------------------------------------
+# Bộ nhớ và lưu bền — hàng đợi BullMQ không được mất khóa
+# -----------------------------------------------------------------------------
+# Máy 16 GB: để dư cho fork khi BGSAVE / viết lại AOF (copy-on-write).
+redis_maxmemory: 8gb
+# BullMQ yêu cầu noeviction: đầy bộ nhớ thì lệnh ghi bị từ chối thay vì âm thầm xóa việc trong hàng đợi.
+redis_maxmemory_policy: noeviction
+redis_appendfsync: everysec
+redis_save_schedule:
+  - "900 1"
+  - "300 10"
+  - "60 10000"
+redis_tcp_backlog: 511
+# 0: không tự cắt kết nối rảnh — kết nối chặn (BRPOPLPUSH/BZPOPMIN) của BullMQ có thể rảnh lâu.
+redis_timeout: 0
+redis_tcp_keepalive: 300
+redis_maxclients: 10000
+# Master từ chối ghi khi không còn replica nào theo kịp trong N giây: hạn chế mất dữ liệu khi tách mạng.
+redis_min_replicas_to_write: 1
+redis_min_replicas_max_lag: 10
+
+# -----------------------------------------------------------------------------
+# Người dùng ACL (mật khẩu lưu dạng băm SHA-256 trong users.acl)
+# -----------------------------------------------------------------------------
+redis_admin_password: "{{ lookup('ansible.builtin.env', 'REDIS_ADMIN_PASSWORD') }}"
+redis_app_password: "{{ lookup('ansible.builtin.env', 'REDIS_APP_PASSWORD') }}"
+redis_repl_password: "{{ lookup('ansible.builtin.env', 'REDIS_REPL_PASSWORD') }}"
+redis_sentinel_monitor_password: "{{ lookup('ansible.builtin.env', 'REDIS_SENTINEL_MONITOR_PASSWORD') }}"
+redis_sentinel_password: "{{ lookup('ansible.builtin.env', 'REDIS_SENTINEL_PASSWORD') }}"
+redis_exporter_password: "{{ lookup('ansible.builtin.env', 'REDIS_EXPORTER_PASSWORD') }}"
+
+redis_app_user: vtvl
+redis_repl_user: replicator
+redis_sentinel_monitor_user: sentinel-monitor
+redis_exporter_user: exporter
+
+# Ứng dụng (Spring Session, Spring Data Redis, BullMQ): mọi lệnh dữ liệu, Lua, pub/sub; bỏ lệnh quản trị và
+# lệnh nguy hiểm (FLUSHALL, KEYS, CONFIG, DEBUG, SHUTDOWN, ACL...). Mở lại riêng INFO (BullMQ đọc phiên bản,
+# maxmemory_policy) và CLIENT SETNAME/SETINFO (ioredis, Lettuce gửi khi kết nối).
+redis_app_acl_rules: >-
+  ~* &* +@all -@admin -@dangerous
+  +info +client|setname +client|getname +client|id +client|info +client|setinfo
+redis_repl_acl_rules: "+psync +replconf +ping"
+# Theo tài liệu Redis Sentinel (mục ACL).
+redis_sentinel_monitor_acl_rules: >-
+  &* +multi +slaveof +ping +exec +subscribe +config|rewrite +role +publish
+  +info +client|setname +client|kill +script|kill
+# redis_exporter: chỉ số, không đọc nội dung khóa.
+redis_exporter_acl_rules: >-
+  -@all +@connection +info +ping +select +config|get +client|list +client|info
+  +slowlog|get +slowlog|len +latency|latest +memory|stats
+
+redis_acl_users:
+  - name: default
+    password: "{{ redis_admin_password }}"
+    rules: "~* &* +@all"
+  - name: "{{ redis_app_user }}"
+    password: "{{ redis_app_password }}"
+    rules: "{{ redis_app_acl_rules }}"
+  - name: "{{ redis_repl_user }}"
+    password: "{{ redis_repl_password }}"
+    rules: "{{ redis_repl_acl_rules }}"
+  - name: "{{ redis_sentinel_monitor_user }}"
+    password: "{{ redis_sentinel_monitor_password }}"
+    rules: "{{ redis_sentinel_monitor_acl_rules }}"
+  - name: "{{ redis_exporter_user }}"
+    password: "{{ redis_exporter_password }}"
+    rules: "{{ redis_exporter_acl_rules }}"
+
+# -----------------------------------------------------------------------------
+# Sao lưu (RDB mỗi đêm trên từng nút, giữ N ngày)
+# -----------------------------------------------------------------------------
+backup_cron: "20 2 * * *"
+backup_retention_days: 7

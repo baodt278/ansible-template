@@ -1,0 +1,39 @@
+---
+- name: Require explicit confirmation
+  ansible.builtin.assert:
+    that:
+      - confirm_clear | default('') == 'yes'
+    fail_msg: "This stops the Internet entry point. Re-run with -e confirm_clear=yes."
+  run_once: true
+
+- name: Stop and disable services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop:
+    - keepalived
+    - haproxy
+  failed_when: false
+
+- name: Remove managed files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/keepalived/keepalived.conf
+    - /etc/systemd/system/haproxy.service.d/override.conf
+    - /etc/sysctl.d/99-haproxy.conf
+    - "{{ cert_file }}"
+
+- name: Purge packages
+  ansible.builtin.apt:
+    name:
+      - haproxy
+      - keepalived
+    state: absent
+    purge: true
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true

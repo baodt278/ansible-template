@@ -1,0 +1,51 @@
+---
+# VIP đi theo master: script kiểm tra trả 0 khi Sentinel cục bộ coi máy này là master VÀ Redis cục bộ có ROLE master.
+# Máy đạt được cộng redis_vrrp_master_weight vào độ ưu tiên nên giữ VIP. Ứng dụng chỉ cần một địa chỉ (VIP).
+- name: Render VIP check script
+  ansible.builtin.template:
+    src: "{{ templates_dir }}/redis-vip-check.sh.j2"
+    dest: /usr/local/sbin/redis-vip-check.sh
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Validate VIP check script syntax
+  ansible.builtin.command: bash -n /usr/local/sbin/redis-vip-check.sh
+  changed_when: false
+
+- name: Ensure keepalived configuration directory exists
+  ansible.builtin.file:
+    path: /etc/keepalived
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render keepalived configuration
+  ansible.builtin.template:
+    src: "{{ templates_dir }}/redis-keepalived.conf.j2"
+    dest: /etc/keepalived/keepalived.conf
+    owner: root
+    group: root
+    mode: "0600"
+  register: redis_keepalived_conf
+
+- name: Validate keepalived configuration
+  ansible.builtin.command: keepalived --config-test -f /etc/keepalived/keepalived.conf
+  changed_when: false
+
+- name: Enable and (re)start keepalived
+  ansible.builtin.systemd:
+    name: keepalived
+    enabled: true
+    state: "{{ 'restarted' if redis_keepalived_conf.changed else 'started' }}"
+
+- name: Wait for VIP to settle on the master only
+  ansible.builtin.command: ip -o -4 addr show dev {{ redis_vip_interface }}
+  register: redis_vip_state
+  changed_when: false
+  until: >-
+    (redis_ip == redis_current_master_ip and (' ' ~ redis_vip ~ '/') in redis_vip_state.stdout) or
+    (redis_ip != redis_current_master_ip and (' ' ~ redis_vip ~ '/') not in redis_vip_state.stdout)
+  retries: 15
+  delay: 2

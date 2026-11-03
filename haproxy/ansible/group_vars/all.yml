@@ -1,0 +1,81 @@
+---
+# =============================================================================
+# HAProxy + keepalived — 2 máy vùng DMZ, cổng vào duy nhất từ Internet (443, 80 → 443)
+# đẩy vào Ingress cụm VKE. Ingress định tuyến theo đường dẫn (/, /api, /oauth2, /login/oauth2,
+# /auth, /ban-cai, /otlp). Cài trực tuyến từ kho Ubuntu. Bí mật đọc từ .env.
+# =============================================================================
+
+templates_dir: "{{ playbook_dir }}/../templates"
+
+haproxy_packages:
+  - haproxy
+  - keepalived
+  - ca-certificates
+
+config_dir: /etc/haproxy
+cert_dir: /etc/haproxy/certs
+cert_file: "{{ cert_dir }}/site.pem"
+
+# -----------------------------------------------------------------------------
+# Keepalived VIP (máy active giữ VIP; HAProxy chết → VIP sang máy standby)
+# -----------------------------------------------------------------------------
+haproxy_vip: "{{ lookup('ansible.builtin.env', 'HAPROXY_VIP') }}"
+haproxy_vip_prefix: "{{ lookup('ansible.builtin.env', 'HAPROXY_VIP_PREFIX') }}"
+haproxy_vip_interface: "{{ lookup('ansible.builtin.env', 'HAPROXY_VIP_INTERFACE') }}"
+haproxy_vrrp_router_id: "{{ lookup('ansible.builtin.env', 'HAPROXY_VRRP_ROUTER_ID') }}"
+haproxy_vrrp_auth_pass: "{{ lookup('ansible.builtin.env', 'HAPROXY_VRRP_AUTH_PASS') }}"
+haproxy_vrrp_priority_active: 150
+haproxy_vrrp_priority_standby: 100
+# Trừ khi HAProxy không chạy: 150 - 60 = 90 < 100 nên VIP chuyển sang standby.
+haproxy_vrrp_check_weight: -60
+
+# -----------------------------------------------------------------------------
+# Đầu vào
+# -----------------------------------------------------------------------------
+# terminate | passthrough
+haproxy_tls_mode: "{{ lookup('ansible.builtin.env', 'HAPROXY_TLS_MODE') | default('terminate', true) }}"
+# Tệp PEM trên máy điều khiển (chứng chỉ + chuỗi trung gian + khóa riêng). Chỉ dùng khi terminate.
+haproxy_tls_pem_src: "{{ lookup('ansible.builtin.env', 'HAPROXY_TLS_PEM_FILE') }}"
+haproxy_bind_address: "*"
+haproxy_http_port: 80
+haproxy_https_port: 443
+haproxy_maxconn: 20000
+# API nhận tiêu đề tới 64 KB (max-http-request-header-size: URL đồng bộ chứa danh sách hồ sơ);
+# bộ đệm HAProxy phải chứa được cả dòng yêu cầu + tiêu đề.
+haproxy_tune_bufsize: 81920
+haproxy_hsts_max_age: 31536000
+
+# Chặn từ Internet: trang quản trị Keycloak và realm master (quản trị đi qua Bastion/đường hầm).
+haproxy_blocked_path_prefixes:
+  - /auth/admin
+  - /auth/realms/master
+
+# Giới hạn số yêu cầu theo IP. Mặc định tắt: nhiều đơn vị đi Internet qua cùng một IP NAT.
+haproxy_rate_limit_enabled: false
+haproxy_rate_limit_per_10s: 500
+
+# -----------------------------------------------------------------------------
+# Ingress cụm VKE
+# -----------------------------------------------------------------------------
+haproxy_ingress_servers_raw: "{{ lookup('ansible.builtin.env', 'HAPROXY_INGRESS_SERVERS') }}"
+haproxy_ingress_servers: "{{ haproxy_ingress_servers_raw | split(',') | map('trim') | select | list }}"
+# Ingress nghe HTTP (TLS kết thúc ở HAProxy). Ở passthrough, cổng phải là cổng HTTPS của Ingress.
+haproxy_ingress_check: "inter 3s fall 3 rise 2"
+
+# -----------------------------------------------------------------------------
+# Thời gian chờ — xuất/nhập Excel lớn và tải tệp có thể lâu
+# -----------------------------------------------------------------------------
+haproxy_timeout_connect: 5s
+haproxy_timeout_client: 120s
+haproxy_timeout_server: 300s
+haproxy_timeout_http_request: 15s
+haproxy_timeout_http_keep_alive: 10s
+haproxy_timeout_queue: 30s
+haproxy_timeout_tunnel: 1h
+
+# -----------------------------------------------------------------------------
+# Thống kê + Prometheus (/metrics), chỉ trên IP nội bộ của máy
+# -----------------------------------------------------------------------------
+haproxy_stats_port: 8404
+haproxy_stats_user: "{{ lookup('ansible.builtin.env', 'HAPROXY_STATS_USER') }}"
+haproxy_stats_password: "{{ lookup('ansible.builtin.env', 'HAPROXY_STATS_PASSWORD') }}"

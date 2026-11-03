@@ -1,0 +1,10 @@
+---
+- name: Verify Redis
+  hosts: redis
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Verify Redis installation
+      ansible.builtin.import_tasks: ../tasks/redis-verify.yml

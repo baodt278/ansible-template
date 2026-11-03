@@ -1,0 +1,47 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Redis {{ redis_version_series }} data node
+Documentation=https://redis.io/docs/
+After=network-online.target disable-thp.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/redis-server {{ config_dir }}/{{ redis_service_name }}.conf --supervised systemd --daemonize no
+TimeoutStartSec=120
+TimeoutStopSec=180
+Restart=always
+RestartSec=2
+User={{ service_user }}
+Group={{ service_group }}
+RuntimeDirectory=redis
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+UMask=007
+LimitNOFILE=65535
+OOMScoreAdjust=-900
+
+# Cô lập tiến trình
+NoNewPrivileges=true
+CapabilityBoundingSet=
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths={{ data_dir }} {{ log_dir }} {{ config_dir }} {{ run_dir }}
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
