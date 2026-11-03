@@ -10,6 +10,9 @@ templates_dir: "{{ playbook_dir }}/../templates"
 # Gói cài đặt — kho chính thức packages.redis.io, ghim dòng 7.4
 # -----------------------------------------------------------------------------
 redis_version_series: "7.4"
+# Epoch của gói packages.redis.io (vd 6:7.4.12-1rl1~noble1). apt KHÔNG nhận mẫu ghim bắt đầu bằng "*",
+# nên dòng ghim phải viết kèm epoch: "6:7.4.*" (đã thử 03/11: "*7.4.*" bị bỏ qua, cài nhầm 8.10.3).
+redis_apt_epoch: "6"
 redis_apt_key_url: https://packages.redis.io/gpg
 redis_apt_keyring: /etc/apt/keyrings/redis-archive-keyring.asc
 redis_apt_repo_url: https://packages.redis.io/deb

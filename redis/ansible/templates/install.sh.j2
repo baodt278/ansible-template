@@ -46,12 +46,15 @@ chmod 0644 '{{ redis_apt_keyring }}'
 echo "deb [signed-by={{ redis_apt_keyring }}] {{ redis_apt_repo_url }} ${VERSION_CODENAME} main" > /etc/apt/sources.list.d/redis.list
 cat > /etc/apt/preferences.d/redis <<'PIN'
 Package: redis redis-server redis-tools redis-sentinel
-Pin: version *{{ redis_version_series }}.*
+Pin: version {{ redis_apt_epoch }}:{{ redis_version_series }}.*
 Pin-Priority: 1001
 PIN
 chmod 0644 /etc/apt/sources.list.d/redis.list /etc/apt/preferences.d/redis
 apt-get update -q
-apt-get install -y -q --no-install-recommends {{ redis_install_packages | join(' ') }}
+# --allow-downgrades: ghim > 1000 hạ bản nếu máy đã lỡ cài bản mới hơn (vd 8.x); giữ tệp cấu hình của gói khi hạ bản.
+apt-get install -y -q --no-install-recommends --allow-downgrades \
+  -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+  {{ redis_install_packages | join(' ') }}
 # Gói tự bật redis-server.service; dùng unit riêng nên tắt và khóa unit của gói.
 systemctl disable --now redis-server.service redis-sentinel.service >/dev/null 2>&1 || true
 systemctl mask redis-server.service redis-sentinel.service >/dev/null 2>&1 || true

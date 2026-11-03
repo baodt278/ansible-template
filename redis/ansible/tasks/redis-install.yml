@@ -30,7 +30,7 @@
     dest: /etc/apt/preferences.d/redis
     content: |
       Package: redis redis-server redis-tools redis-sentinel
-      Pin: version *{{ redis_version_series }}.*
+      Pin: version {{ redis_apt_epoch }}:{{ redis_version_series }}.*
       Pin-Priority: 1001
     owner: root
     group: root
@@ -44,6 +44,8 @@
     update_cache: true
     cache_valid_time: "{{ 0 if (redis_apt_repo.changed or redis_apt_pin.changed) else 3600 }}"
     install_recommends: false
+    # Ghim > 1000: được hạ bản nếu máy đã lỡ cài bản mới hơn (vd 8.x).
+    allow_downgrade: true
   environment:
     DEBIAN_FRONTEND: noninteractive
 
